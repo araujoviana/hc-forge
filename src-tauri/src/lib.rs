@@ -6,8 +6,7 @@ use api::models::vpc::{Subnet, Vpc};
 use chrono::Utc;
 use rand::{distr::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
+use log::{error, info};
 
 const RANDOM_NAME_PLACEHOLDER: &str = "ecs-<RANDOM-VALUE>";
 const DEFAULT_EIP_TYPE: &str = "5_bgp";
@@ -43,11 +42,6 @@ struct CreateEcsResult {
     status: String,
     status_code: u16,
     body: String,
-}
-
-fn init_tracing() {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(env_filter).try_init();
 }
 
 // Generate a ECS name when the placeholder is used.
@@ -109,19 +103,19 @@ async fn list_vpcs(
     credentials: Option<CredentialsInput>,
 ) -> Result<Vec<Vpc>, String> {
     let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
-        error!(error = %err, "Failed to resolve credentials");
+        error!("Failed to resolve credentials: {}", err);
         err
     })?;
 
     let source_label = credentials_source_label(&source);
-    info!(source = %source_label, region = %region, "Listing VPCs");
+    info!("Listing VPCs: source={} region={}", source_label, region);
 
     let client = HwcClient::new(credentials);
     client
         .list_vpcs(&region)
         .await
         .map_err(|err| {
-            error!(error = %err, region = %region, "Failed to list VPCs");
+            error!("Failed to list VPCs: region={} error={}", region, err);
             err.to_string()
         })
 }
@@ -134,19 +128,25 @@ async fn list_subnets(
     credentials: Option<CredentialsInput>,
 ) -> Result<Vec<Subnet>, String> {
     let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
-        error!(error = %err, "Failed to resolve credentials");
+        error!("Failed to resolve credentials: {}", err);
         err
     })?;
 
     let source_label = credentials_source_label(&source);
-    info!(source = %source_label, region = %region, vpc_id = %vpc_id, "Listing subnets");
+    info!(
+        "Listing subnets: source={} region={} vpc_id={}",
+        source_label, region, vpc_id
+    );
 
     let client = HwcClient::new(credentials);
     client
         .list_subnets(&region, &vpc_id)
         .await
         .map_err(|err| {
-            error!(error = %err, region = %region, vpc_id = %vpc_id, "Failed to list subnets");
+            error!(
+                "Failed to list subnets: region={} vpc_id={} error={}",
+                region, vpc_id, err
+            );
             err.to_string()
         })
 }
@@ -158,18 +158,14 @@ async fn create_ecs(
     credentials: Option<CredentialsInput>,
 ) -> Result<CreateEcsResult, String> {
     let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
-        error!(error = %err, "Failed to resolve credentials");
+        error!("Failed to resolve credentials: {}", err);
         err
     })?;
 
     let source_label = credentials_source_label(&source);
     info!(
-        source = %source_label,
-        region = %params.region,
-        vpc_id = %params.vpc_id,
-        subnet_id = %params.subnet_id,
-        allocate_eip = params.eip,
-        "Creating ECS instance"
+        "Creating ECS instance: source={} region={} vpc_id={} subnet_id={} allocate_eip={}",
+        source_label, params.region, params.vpc_id, params.subnet_id, params.eip
     );
 
     let server_name = normalize_server_name(&params.name);
@@ -211,7 +207,7 @@ async fn create_ecs(
         .create_ecs(&params.region, &body)
         .await
         .map_err(|err| {
-            error!(error = %err, region = %params.region, "Failed to create ECS");
+            error!("Failed to create ECS: region={} error={}", params.region, err);
             err.to_string()
         })?;
 
@@ -224,8 +220,6 @@ async fn create_ecs(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    init_tracing();
-
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()

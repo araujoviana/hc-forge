@@ -182,7 +182,7 @@ async function createEcs() {
         <p class="eyebrow">HC Forge</p>
         <h1>Elastic Cloud Server</h1>
         <p class="subtitle">
-          Minimal UI that mirrors the old `hcli` create flow. Provide AK/SK
+          Provide AK/SK
           below or leave them blank to use `HWC_AK` and `HWC_SK` from the
           environment.
         </p>

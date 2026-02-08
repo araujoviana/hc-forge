@@ -4,11 +4,12 @@ use hmac::{Hmac, Mac};
 use reqwest::{Client, Method, Request, StatusCode};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
-use tracing::{debug, warn};
+use log::{debug, warn};
 
 use super::auth::credentials::Credentials;
 use super::models::ecs::CreateEcsRequest;
 use super::models::iam::ProjectsResponse;
+use super::models::ims::{Image, ImageListResponse};
 use super::models::vpc::{Subnet, SubnetListResponse, Vpc, VpcListResponse};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -62,6 +63,20 @@ impl HwcClient {
             .context("Failed to list subnets")?;
 
         Ok(body.subnets)
+    }
+
+    /// List images for the given region.
+    /// IMS Querying Images: GET https://{Endpoint}/v2/cloudimages
+    pub async fn list_images(&self, region: &str) -> Result<Vec<Image>> {
+        let host = format!("ims.{region}.myhuaweicloud.com");
+        let path = "/v2/cloudimages".to_string();
+
+        let body: ImageListResponse = self
+            .send_json(Method::GET, &host, &path, None)
+            .await
+            .context("Failed to list images")?;
+
+        Ok(body.images)
     }
 
     /// Create an ECS instance and return the status + raw response body.
@@ -126,7 +141,10 @@ impl HwcClient {
         let text = resp.text().await.context("Failed to read response")?;
 
         if !status.is_success() {
-            warn!(%status, host, path, body = %text, "Huawei Cloud API error");
+            warn!(
+                "Huawei Cloud API error: status={} host={} path={} body={}",
+                status, host, path, text
+            );
             anyhow::bail!("Huawei Cloud API returned {}", status);
         }
 
@@ -146,7 +164,10 @@ impl HwcClient {
         let text = resp.text().await.context("Failed to read response")?;
 
         if !status.is_success() {
-            warn!(%status, host, path, body = %text, "Huawei Cloud API error");
+            warn!(
+                "Huawei Cloud API error: status={} host={} path={} body={}",
+                status, host, path, text
+            );
         }
 
         Ok((status, text))
@@ -206,7 +227,7 @@ impl HwcClient {
             req = req.header(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON).body(json);
         }
 
-        debug!(host, path, "Signed Huawei Cloud request");
+        debug!("Signed Huawei Cloud request: host={} path={}", host, path);
         Ok(req.build()?)
     }
 }
