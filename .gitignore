@@ -1,0 +1,32 @@
+# Rust / Cargo
+/target/
+/src-tauri/target/
+**/*.rs.bk
+
+# Node / Vite
+/node_modules/
+/dist/
+/dist-ssr/
+/.vite/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Tauri
+/src-tauri/gen/
+/src-tauri/.tauri/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
