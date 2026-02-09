@@ -1,16 +1,39 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { load } from '@tauri-apps/plugin-store';
 
 type VpcOption = { id: string; name: string };
 type SubnetOption = { id: string; name: string; cidr: string };
+type ImageOption = { id: string; name: string; min_disk?: number | null };
+type FlavorOption = { id: string; name: string };
 type CreateEcsResult = { status: string; status_code: number; body: string };
 type CredentialsPayload = { accessKey: string; secretKey: string };
 
+const regions = [
+  "sa-brazil-1",
+  "af-north-1",
+  "af-south-1",
+  "ap-southeast-1",
+  "ap-southeast-2",
+  "ap-southeast-3",
+  "cn-east-3",
+  "cn-north-4",
+  "cn-south-1",
+  "cn-southwest-2",
+  "la-south-2",
+  "tr-west-1",
+] as const;
+
 const region = ref("sa-brazil-1");
-const name = ref("ecs-<RANDOM-VALUE>");
+const name = ref("");
 const imageId = ref("");
+const imageSearch = ref("");
+const imageVisibility = ref("public");
+const imageType = ref("gold");
+const useCustomName = ref(false);
 const flavorId = ref("");
+const flavorSearch = ref("");
 const rootVolumeType = ref("SATA");
 const rootVolumeSize = ref(40);
 const allocateEip = ref(false);
@@ -19,15 +42,24 @@ const secretKey = ref("");
 
 const vpcs = ref<VpcOption[]>([]);
 const subnets = ref<SubnetOption[]>([]);
+const images = ref<ImageOption[]>([]);
+const flavors = ref<FlavorOption[]>([]);
 const selectedVpc = ref("");
 const selectedSubnet = ref("");
 
 const loadingVpcs = ref(false);
 const loadingSubnets = ref(false);
+const loadingImages = ref(false);
+const loadingFlavors = ref(false);
+const savingCredentials = ref(false);
+const loadingAll = ref(false);
 const creating = ref(false);
 
 const errorMsg = ref("");
 const result = ref<CreateEcsResult | null>(null);
+
+let store: Awaited<ReturnType<typeof load>> | null = null;
+const storeReady = ref(false);
 
 const canLoadSubnets = computed(() => !!selectedVpc.value && !loadingSubnets.value);
 const canCreate = computed(
@@ -36,8 +68,45 @@ const canCreate = computed(
     !!flavorId.value &&
     !!selectedVpc.value &&
     !!selectedSubnet.value &&
+    (!useCustomName.value || !!name.value.trim()) &&
     !creating.value
 );
+
+const canListImages = computed(() => !!region.value && !loadingImages.value);
+const canListFlavors = computed(() => !!region.value && !loadingFlavors.value);
+const imageMinDisk = computed(() => {
+  const image = images.value.find((item) => item.id === imageId.value);
+  const minDisk = image?.min_disk ?? 1;
+  return Math.min(Math.max(minDisk, 1), 1024);
+});
+const filteredImages = computed(() => {
+  const query = imageSearch.value.trim().toLowerCase();
+  if (!query) {
+    return images.value;
+  }
+  return images.value.filter((image) => {
+    const name = image.name.toLowerCase();
+    return name.includes(query) || image.id.toLowerCase().includes(query);
+  });
+});
+const filteredFlavors = computed(() => {
+  const query = flavorSearch.value.trim().toLowerCase();
+  if (!query) {
+    return flavors.value;
+  }
+  return flavors.value.filter((flavor) =>
+    flavor.name.toLowerCase().includes(query)
+  );
+});
+
+watch(imageMinDisk, (minDisk) => {
+  if (!rootVolumeSize.value || rootVolumeSize.value < minDisk) {
+    rootVolumeSize.value = minDisk;
+  }
+  if (rootVolumeSize.value > 1024) {
+    rootVolumeSize.value = 1024;
+  }
+});
 
 function errorToString(err: unknown): string {
   if (err instanceof Error) {
@@ -130,6 +199,126 @@ async function loadSubnets() {
   }
 }
 
+// Pull images for the chosen region.
+async function loadImages() {
+  loadingImages.value = true;
+  errorMsg.value = "";
+  result.value = null;
+
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = { region: region.value };
+    const filters: Record<string, unknown> = {};
+
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    if (imageVisibility.value !== "all") {
+      filters.visibility = imageVisibility.value;
+    }
+    if (imageType.value !== "all") {
+      filters.imageType = imageType.value;
+    }
+    if (Object.keys(filters).length > 0) {
+      args.filters = filters;
+    }
+
+    const data = await invoke<ImageOption[]>("list_images", args);
+    images.value = data;
+
+    if (!data.find((image) => image.id === imageId.value)) {
+      imageId.value = data[0]?.id ?? "";
+    }
+  } catch (err) {
+    errorMsg.value = `Failed to load images: ${errorToString(err)}`;
+  } finally {
+    loadingImages.value = false;
+  }
+}
+
+// Pull flavors for the chosen region.
+async function loadFlavors() {
+  loadingFlavors.value = true;
+  errorMsg.value = "";
+  result.value = null;
+
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = { region: region.value };
+
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    const data = await invoke<FlavorOption[]>("list_flavors", args);
+    flavors.value = data;
+
+    if (!data.find((flavor) => flavor.id === flavorId.value)) {
+      flavorId.value = data[0]?.id ?? "";
+    }
+  } catch (err) {
+    errorMsg.value = `Failed to load flavors: ${errorToString(err)}`;
+  } finally {
+    loadingFlavors.value = false;
+  }
+}
+
+async function loadAll() {
+  if (loadingAll.value) {
+    return;
+  }
+  loadingAll.value = true;
+  try {
+    await loadImages();
+    await loadFlavors();
+    await loadVpcs();
+    if (selectedVpc.value) {
+      await loadSubnets();
+    }
+  } finally {
+    loadingAll.value = false;
+  }
+}
+
+async function saveCredentials() {
+  if (!store) {
+    errorMsg.value = "Credential store is not ready yet.";
+    return;
+  }
+  savingCredentials.value = true;
+  try {
+    await store.set("accessKey", accessKey.value);
+    await store.set("secretKey", secretKey.value);
+  } finally {
+    savingCredentials.value = false;
+  }
+}
+
+async function initStore() {
+  try {
+    store = await load("store.json", { autoSave: true });
+    accessKey.value = (await store.get<string>("accessKey")) ?? "";
+    secretKey.value = (await store.get<string>("secretKey")) ?? "";
+    storeReady.value = true;
+  } catch (err) {
+    errorMsg.value = `Failed to load credential store: ${errorToString(err)}`;
+  }
+  await loadAll();
+}
+
+onMounted(() => {
+  initStore();
+});
+
+watch(region, () => {
+  loadAll();
+});
+
+watch([imageVisibility, imageType], () => {
+  loadImages();
+});
+
 // Send the ECS create request using the same inputs as the old CLI.
 async function createEcs() {
   if (!imageId.value || !flavorId.value) {
@@ -149,7 +338,7 @@ async function createEcs() {
   try {
     const credentials = buildCredentialsPayload();
     const payload = {
-      name: name.value,
+      name: useCustomName.value ? name.value.trim() : "",
       imageId: imageId.value,
       flavorId: flavorId.value,
       region: region.value,
@@ -177,27 +366,18 @@ async function createEcs() {
 
 <template>
   <main class="page">
-    <header class="hero">
-      <div>
+    <header class="topbar">
+      <div class="brand">
         <p class="eyebrow">HC Forge</p>
-        <h1>Elastic Cloud Server</h1>
+        <h1>Cloud Ops Console</h1>
         <p class="subtitle">
-          Provide AK/SK
-          below or leave them blank to use `HWC_AK` and `HWC_SK` from the
-          environment.
+          Shared credentials across Huawei Cloud services. Leave blank to use
+          `HWC_AK` and `HWC_SK`.
         </p>
       </div>
-      <div class="chip">Region-driven, API-backed</div>
-    </header>
-
-    <div class="layout">
-      <section class="panel">
-        <h2>Credentials</h2>
-        <p class="hint">
-          These are only used for the current request and are not stored.
-        </p>
-        <div class="grid">
-          <label class="field">
+      <div class="credentials-card">
+        <div class="cred-grid">
+          <label class="mini-field">
             <span>Access Key</span>
             <input
               v-model="accessKey"
@@ -207,7 +387,7 @@ async function createEcs() {
             />
           </label>
 
-          <label class="field">
+          <label class="mini-field">
             <span>Secret Key</span>
             <input
               v-model="secretKey"
@@ -218,41 +398,186 @@ async function createEcs() {
             />
           </label>
         </div>
+        <div class="cred-actions">
+          <button
+            class="ghost minor"
+            :disabled="savingCredentials || !storeReady"
+            @click="saveCredentials"
+          >
+            {{ savingCredentials ? "Saving..." : "Save Credentials" }}
+          </button>
+          <span class="muted tiny">Stored locally on this device.</span>
+        </div>
+      </div>
+    </header>
 
-        <div class="divider"></div>
+    <section class="hero service-hero">
+      <div>
+        <p class="eyebrow">Service</p>
+        <h2>Elastic Cloud Server</h2>
+        <p class="subtitle">
+          Build and launch ECS instances with images, flavors, and network
+          wiring.
+        </p>
+      </div>
+      <div class="chip">ECS Module</div>
+    </section>
 
+    <div class="layout">
+      <section class="panel">
         <h2>Server Inputs</h2>
         <div class="grid">
           <label class="field">
             <span>Region</span>
-            <input v-model="region" placeholder="sa-brazil-1" />
+            <select v-model="region">
+              <option v-for="item in regions" :key="item" :value="item">
+                {{ item }}
+              </option>
+            </select>
           </label>
 
-          <label class="field">
+          <div class="field">
             <span>Name</span>
-            <input v-model="name" placeholder="ecs-&lt;RANDOM-VALUE&gt;" />
-          </label>
+            <div class="toggle-inline">
+              <input id="custom-name" v-model="useCustomName" type="checkbox" />
+              <label for="custom-name">Use custom name</label>
+            </div>
+            <input
+              v-model="name"
+              :disabled="!useCustomName"
+              placeholder="my-ecs-prod"
+            />
+            <span v-if="!useCustomName" class="muted tiny">
+              Auto-generated when disabled.
+            </span>
+          </div>
 
-          <label class="field">
-            <span>Image ID</span>
-            <input v-model="imageId" placeholder="Image UUID" />
-          </label>
+          <div class="field span-2">
+            <span>Image ({{ filteredImages.length }}/{{ images.length }})</span>
+            <div class="combo">
+              <input v-model="imageSearch" placeholder="Search images..." />
+              <select v-model="imageId">
+                <option value="" disabled>Select an image</option>
+                <option
+                  v-for="image in filteredImages"
+                  :key="image.id"
+                  :value="image.id"
+                >
+                  {{ image.name }} ({{ image.id }})
+                </option>
+              </select>
+            </div>
+          </div>
 
-          <label class="field">
-            <span>Flavor ID</span>
-            <input v-model="flavorId" placeholder="Flavor UUID" />
-          </label>
+          <div class="field span-2">
+            <span>Flavor</span>
+            <div class="combo">
+              <input v-model="flavorSearch" placeholder="Search flavors..." />
+              <select v-model="flavorId">
+                <option value="" disabled>Select a flavor</option>
+                <option
+                  v-for="flavor in filteredFlavors"
+                  :key="flavor.id"
+                  :value="flavor.id"
+                >
+                  {{ flavor.name }}
+                </option>
+              </select>
+            </div>
+          </div>
 
           <label class="field">
             <span>Root Volume Type</span>
-            <input v-model="rootVolumeType" placeholder="SATA" />
+            <select v-model="rootVolumeType" :disabled="!imageId">
+              <option value="SATA">SATA (Common I/O)</option>
+              <option value="SAS">SAS (High I/O)</option>
+              <option value="GPSSD">GPSSD (General Purpose SSD)</option>
+              <option value="SSD">Ultra-I/O SSD (Ultra I/O)</option>
+              <option value="ESSD">ESSD (Extreme SSD)</option>
+              <option value="GPSSD2">GPSSD2 (General Purpose SSD V2)</option>
+              <option value="ESSD2">ESSD2 (Extreme SSD V2)</option>
+            </select>
           </label>
 
-          <label class="field">
+          <div class="field span-2">
             <span>Root Volume Size (GB)</span>
-            <input v-model.number="rootVolumeSize" type="number" min="1" />
-          </label>
+            <div class="range-row">
+              <input
+                v-model.number="rootVolumeSize"
+                type="range"
+                :min="imageMinDisk"
+                max="1024"
+                step="1"
+              />
+              <input
+                v-model.number="rootVolumeSize"
+                type="number"
+                :min="imageMinDisk"
+                max="1024"
+              />
+            </div>
+            <div class="range-meta">
+              <span>{{ rootVolumeSize }} GB</span>
+              <span class="muted">Min {{ imageMinDisk }} GB</span>
+            </div>
+          </div>
         </div>
+
+        <div class="advanced">
+          <div class="advanced-header">
+            <span>Image Filters (optional)</span>
+            <span class="muted tiny">Usually keep defaults.</span>
+          </div>
+          <div class="grid minor-grid">
+            <label class="field">
+              <span>Visibility</span>
+              <select v-model="imageVisibility">
+                <option value="all">All</option>
+                <option value="public">Public</option>
+                <option value="private">Private</option>
+                <option value="shared">Shared</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Image Type</span>
+              <select v-model="imageType">
+                <option value="all">All</option>
+                <option value="gold">Gold (Public)</option>
+                <option value="private">Private</option>
+                <option value="shared">Shared</option>
+                <option value="market">Marketplace</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="actions minor-actions">
+          <button class="ghost minor" :disabled="loadingAll" @click="loadAll">
+            {{ loadingAll ? "Reloading All..." : "Reload All" }}
+          </button>
+          <button
+            class="ghost minor"
+            :disabled="!canListImages"
+            @click="loadImages"
+          >
+            {{ loadingImages ? "Reloading Images..." : "Reload Images" }}
+          </button>
+          <button
+            class="ghost minor"
+            :disabled="!canListFlavors"
+            @click="loadFlavors"
+          >
+            {{ loadingFlavors ? "Reloading Flavors..." : "Reload Flavors" }}
+          </button>
+        </div>
+        <p class="muted" v-if="loadingAll">
+          Reloading images, flavors, VPCs, and subnets...
+        </p>
+        <p class="muted" v-else>
+          Images: {{ images.length }} • Flavors: {{ flavors.length }} • VPCs:
+          {{ vpcs.length }} • Subnets: {{ subnets.length }}
+        </p>
 
         <div class="toggle">
           <input id="eip" v-model="allocateEip" type="checkbox" />
@@ -289,17 +614,17 @@ async function createEcs() {
         </div>
 
         <div class="actions">
-          <button class="ghost" :disabled="loadingVpcs" @click="loadVpcs">
-            {{ loadingVpcs ? "Loading VPCs..." : "Load VPCs" }}
+          <button class="ghost minor" :disabled="loadingVpcs" @click="loadVpcs">
+            {{ loadingVpcs ? "Reloading VPCs..." : "Reload VPCs" }}
           </button>
           <button
-            class="ghost"
+            class="ghost minor"
             :disabled="!canLoadSubnets"
             @click="loadSubnets"
           >
-            {{ loadingSubnets ? "Loading Subnets..." : "Load Subnets" }}
+            {{ loadingSubnets ? "Reloading Subnets..." : "Reload Subnets" }}
           </button>
-          <button class="primary" :disabled="!canCreate" @click="createEcs">
+          <button class="primary cta" :disabled="!canCreate" @click="createEcs">
             {{ creating ? "Creating..." : "Create ECS" }}
           </button>
         </div>
@@ -312,7 +637,7 @@ async function createEcs() {
           <span class="badge">{{ result.status_code }}</span>
           <span>{{ result.status }}</span>
         </div>
-        <p v-else class="muted">No response yet. Load VPCs to begin.</p>
+        <p v-else class="muted">No response yet. Run an action to see output.</p>
 
         <pre v-if="result" class="body">{{ result.body }}</pre>
       </section>
@@ -324,11 +649,20 @@ async function createEcs() {
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap");
 
 :root {
+  --ink: #101828;
+  --muted: #667085;
+  --panel: #ffffff;
+  --panel-border: rgba(15, 23, 42, 0.08);
+  --accent: #0f766e;
+  --accent-strong: #0b5f59;
+  --accent-warm: #ef6f48;
+  --bg: #f6f5f2;
+  --bg-strong: #f0ede7;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   font-size: 16px;
   line-height: 1.5;
-  color: #1c1f24;
-  background: #f3efe7;
+  color: var(--ink);
+  background: var(--bg);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -336,7 +670,7 @@ async function createEcs() {
 
 body {
   margin: 0;
-  background: radial-gradient(circle at top, #fff7e6 0%, #f3efe7 45%, #e9f0f5 100%);
+  background: radial-gradient(circle at top, #ffffff 0%, var(--bg-strong) 45%, #e8eef2 100%);
   min-height: 100vh;
 }
 
@@ -345,7 +679,7 @@ body {
 }
 
 .page {
-  max-width: 1100px;
+  max-width: 1240px;
   margin: 0 auto;
   padding: 48px 24px 72px;
   display: flex;
@@ -358,11 +692,6 @@ body {
   gap: 24px;
   align-items: center;
   justify-content: space-between;
-  padding: 24px 28px;
-  border-radius: 20px;
-  background: linear-gradient(135deg, #0f766e 0%, #1f8a70 45%, #ef6f48 100%);
-  color: #fff;
-  box-shadow: 0 24px 40px rgba(15, 23, 42, 0.2);
 }
 
 .eyebrow {
@@ -373,39 +702,110 @@ body {
   font-weight: 600;
 }
 
-.hero h1 {
+.topbar {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 24px 26px;
+  border-radius: 18px;
+  background: #0f172a;
+  color: #f8fafc;
+  box-shadow: 0 18px 30px rgba(15, 23, 42, 0.24);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.topbar h1 {
   font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
-  font-size: 2.4rem;
+  font-size: 2.3rem;
   margin: 0 0 8px;
 }
 
 .subtitle {
   margin: 0;
   max-width: 520px;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.82);
 }
 
 .chip {
   padding: 10px 16px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   font-weight: 600;
   text-align: center;
 }
 
+.credentials-card {
+  min-width: 360px;
+  background: rgba(248, 250, 252, 0.98);
+  color: var(--ink);
+  border-radius: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.8);
+}
+
+.cred-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.cred-actions {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mini-field {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.mini-field span {
+  font-size: 0.8rem;
+  color: #475467;
+}
+
+.service-hero {
+  padding: 18px 22px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+  color: #f9fafb;
+  box-shadow: 0 16px 26px rgba(15, 23, 42, 0.22);
+}
+
+.service-hero h2 {
+  margin: 0 0 6px;
+  font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+  font-size: 1.8rem;
+}
+
+.service-hero .subtitle {
+  color: rgba(249, 250, 251, 0.78);
+}
+
 .layout {
   display: grid;
-  grid-template-columns: 1.2fr 1fr;
+  grid-template-columns: 1fr;
   gap: 24px;
 }
 
 .panel {
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--panel);
   border-radius: 18px;
   padding: 24px;
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
-  border: 1px solid rgba(15, 118, 110, 0.12);
+  box-shadow: 0 18px 30px rgba(15, 23, 42, 0.08);
+  border: 1px solid var(--panel-border);
 }
 
 .panel h2 {
@@ -416,7 +816,7 @@ body {
 
 .hint {
   margin: -6px 0 16px;
-  color: #6b7280;
+  color: var(--muted);
   font-size: 0.9rem;
 }
 
@@ -437,6 +837,23 @@ body {
   color: #5f6b72;
 }
 
+.span-2 {
+  grid-column: span 2;
+}
+
+.combo {
+  display: grid;
+  gap: 10px;
+}
+
+.toggle-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #5f6b72;
+}
+
 input,
 select {
   padding: 10px 12px;
@@ -451,8 +868,33 @@ select {
 input:focus,
 select:focus {
   outline: none;
-  border-color: #1f8a70;
+  border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(31, 138, 112, 0.18);
+}
+
+input:disabled,
+select:disabled {
+  background: #f3f4f6;
+  color: #9ca3af;
+}
+
+input[type="range"] {
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.range-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 12px;
+  align-items: center;
+}
+
+.range-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: #5f6b72;
 }
 
 .toggle {
@@ -469,11 +911,37 @@ select:focus {
   margin: 24px 0;
 }
 
+.advanced {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #f8fafb;
+  border: 1px dashed rgba(148, 163, 184, 0.6);
+}
+
+.advanced-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  font-weight: 600;
+  color: #344054;
+}
+
+.minor-grid .field span {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
 .actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-top: 16px;
+}
+
+.minor-actions {
+  margin-top: 14px;
 }
 
 button {
@@ -493,15 +961,29 @@ button:disabled {
 }
 
 .primary {
-  background: linear-gradient(135deg, #0f766e 0%, #1f8a70 100%);
+  background: linear-gradient(135deg, var(--accent-strong) 0%, var(--accent) 100%);
   color: #fff;
-  box-shadow: 0 16px 24px rgba(15, 118, 110, 0.25);
+  box-shadow: 0 18px 28px rgba(15, 118, 110, 0.28);
 }
 
 .ghost {
-  background: #f3efe7;
-  border: 1px solid #d4d0c7;
-  color: #1c1f24;
+  background: #f2f4f7;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+  color: var(--ink);
+}
+
+.minor {
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: #f8fafb;
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+.cta {
+  grid-column: 1 / -1;
+  font-size: 1rem;
+  padding: 14px 18px;
 }
 
 .output {
@@ -536,7 +1018,7 @@ button:disabled {
   padding: 16px;
   font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
   font-size: 0.85rem;
-  max-height: 420px;
+  max-height: 260px;
   overflow: auto;
 }
 
@@ -550,14 +1032,14 @@ button:disabled {
 }
 
 .muted {
-  color: #6b7280;
+  color: var(--muted);
+}
+
+.tiny {
+  font-size: 0.75rem;
 }
 
 @media (max-width: 980px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-
   .grid {
     grid-template-columns: 1fr;
   }
@@ -566,9 +1048,18 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .hero {
+  .topbar,
+  .service-hero {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .cred-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .range-row {
+    grid-template-columns: 1fr;
   }
 }
 </style>

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
 pub struct CreateEcsRequest {
@@ -43,7 +43,7 @@ pub struct PublicIp {
 
 #[derive(Serialize)]
 pub struct Eip {
-    #[serde(rename = "ip_type")]
+    #[serde(rename = "iptype")]
     pub ip_type: String,
     pub bandwidth: Bandwidth,
 }
@@ -52,9 +52,20 @@ pub struct Eip {
 pub struct Bandwidth {
     pub size: u32,
 
-    #[serde(rename = "share_type")]
+    #[serde(rename = "sharetype")]
     pub share_type: String,
 
-    #[serde(rename = "charge_mode")]
+    #[serde(rename = "chargemode")]
     pub charge_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Flavor {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FlavorListResponse {
+    pub flavors: Vec<Flavor>,
 }

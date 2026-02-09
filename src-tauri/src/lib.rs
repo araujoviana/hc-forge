@@ -1,12 +1,15 @@
 mod api;
 
-use api::{load_credentials, Credentials, CredentialsSource, HwcClient};
-use api::models::ecs::{Bandwidth, CreateEcsRequest, Eip, Nic, PublicIp, RootVolume, Server};
+use crate::api::models::ims::Image;
+use api::models::ecs::{
+    Bandwidth, CreateEcsRequest, Eip, Flavor, Nic, PublicIp, RootVolume, Server,
+};
 use api::models::vpc::{Subnet, Vpc};
+use api::{load_credentials, Credentials, CredentialsSource, HwcClient, ImageListFilters};
 use chrono::Utc;
+use log::{error, info, warn};
 use rand::{distr::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
-use log::{error, info};
 
 const RANDOM_NAME_PLACEHOLDER: &str = "ecs-<RANDOM-VALUE>";
 const DEFAULT_EIP_TYPE: &str = "5_bgp";
@@ -35,6 +38,13 @@ struct EcsCreateParams {
 struct CredentialsInput {
     access_key: String,
     secret_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageFilters {
+    visibility: Option<String>,
+    image_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,13 +121,10 @@ async fn list_vpcs(
     info!("Listing VPCs: source={} region={}", source_label, region);
 
     let client = HwcClient::new(credentials);
-    client
-        .list_vpcs(&region)
-        .await
-        .map_err(|err| {
-            error!("Failed to list VPCs: region={} error={}", region, err);
-            err.to_string()
-        })
+    client.list_vpcs(&region).await.map_err(|err| {
+        error!("Failed to list VPCs: region={} error={}", region, err);
+        err.to_string()
+    })
 }
 
 /// List subnets for the selected VPC so the UI can populate a dropdown.
@@ -139,16 +146,65 @@ async fn list_subnets(
     );
 
     let client = HwcClient::new(credentials);
-    client
-        .list_subnets(&region, &vpc_id)
-        .await
-        .map_err(|err| {
-            error!(
-                "Failed to list subnets: region={} vpc_id={} error={}",
-                region, vpc_id, err
-            );
-            err.to_string()
-        })
+    client.list_subnets(&region, &vpc_id).await.map_err(|err| {
+        error!(
+            "Failed to list subnets: region={} vpc_id={} error={}",
+            region, vpc_id, err
+        );
+        err.to_string()
+    })
+}
+
+/// List images for the given region so the UI can populate a dropdown.
+#[tauri::command]
+async fn list_images(
+    region: String,
+    filters: Option<ImageFilters>,
+    credentials: Option<CredentialsInput>,
+) -> Result<Vec<Image>, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let source_label = credentials_source_label(&source);
+    info!("Listing images: source={} region={}", source_label, region);
+
+    let client = HwcClient::new(credentials);
+    let filters = filters.map(|input| ImageListFilters {
+        visibility: input.visibility,
+        image_type: input.image_type,
+    });
+    let images = client.list_images(&region, filters).await.map_err(|err| {
+        error!("Failed to list images: region={} error={}", region, err);
+        err.to_string()
+    })?;
+
+    warn!("Raw images response: {:#?}", images);
+    info!("Found {} images in region {}", images.len(), region);
+
+    Ok(images)
+}
+
+/// List flavors for the given region so the UI can populate a dropdown.
+#[tauri::command]
+async fn list_flavors(
+    region: String,
+    credentials: Option<CredentialsInput>,
+) -> Result<Vec<Flavor>, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let source_label = credentials_source_label(&source);
+    info!("Listing flavors: source={} region={}", source_label, region);
+
+    let client = HwcClient::new(credentials);
+    client.list_flavors(&region).await.map_err(|err| {
+        error!("Failed to list flavors: region={} error={}", region, err);
+        err.to_string()
+    })
 }
 
 /// Create an ECS instance using the same core flow as the old CLI.
@@ -207,7 +263,10 @@ async fn create_ecs(
         .create_ecs(&params.region, &body)
         .await
         .map_err(|err| {
-            error!("Failed to create ECS: region={} error={}", params.region, err);
+            error!(
+                "Failed to create ECS: region={} error={}",
+                params.region, err
+            );
             err.to_string()
         })?;
 
@@ -231,6 +290,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_vpcs,
             list_subnets,
+            list_images,
+            list_flavors,
             create_ecs
         ])
         .run(tauri::generate_context!())

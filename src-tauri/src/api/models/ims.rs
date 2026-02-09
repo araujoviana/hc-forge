@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Image {
+    #[serde(rename = "__whole_image", alias = "whole_image")]
+    pub whole_image: Option<bool>,
     pub id: String,
     pub name: String,
     pub status: String,

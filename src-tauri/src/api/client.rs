@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use log::{debug, warn};
 
 use super::auth::credentials::Credentials;
-use super::models::ecs::CreateEcsRequest;
+use super::models::ecs::{CreateEcsRequest, Flavor, FlavorListResponse};
 use super::models::iam::ProjectsResponse;
 use super::models::ims::{Image, ImageListResponse};
 use super::models::vpc::{Subnet, SubnetListResponse, Vpc, VpcListResponse};
@@ -27,6 +27,18 @@ const IAM_PROJECTS_PATH: &str = "/v3/auth/projects";
 pub struct HwcClient {
     credentials: Credentials,
     http: Client,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ImageListFilters {
+    pub visibility: Option<String>,
+    pub image_type: Option<String>,
+}
+
+fn push_query_param(params: &mut Vec<String>, key: &str, value: &str) {
+    if !value.is_empty() {
+        params.push(format!("{key}={value}"));
+    }
 }
 
 impl HwcClient {
@@ -67,9 +79,28 @@ impl HwcClient {
 
     /// List images for the given region.
     /// IMS Querying Images: GET https://{Endpoint}/v2/cloudimages
-    pub async fn list_images(&self, region: &str) -> Result<Vec<Image>> {
+    pub async fn list_images(
+        &self,
+        region: &str,
+        filters: Option<ImageListFilters>,
+    ) -> Result<Vec<Image>> {
         let host = format!("ims.{region}.myhuaweicloud.com");
-        let path = "/v2/cloudimages".to_string();
+        let mut params = vec!["virtual_env_type=FusionCompute".to_string()];
+
+        if let Some(filters) = filters {
+            if let Some(visibility) = filters.visibility.as_deref() {
+                push_query_param(&mut params, "visibility", visibility);
+            }
+            if let Some(image_type) = filters.image_type.as_deref() {
+                push_query_param(&mut params, "__imagetype", image_type);
+            }
+        }
+
+        let path = if params.is_empty() {
+            "/v2/cloudimages".to_string()
+        } else {
+            format!("/v2/cloudimages?{}", params.join("&"))
+        };
 
         let body: ImageListResponse = self
             .send_json(Method::GET, &host, &path, None)
@@ -77,6 +108,21 @@ impl HwcClient {
             .context("Failed to list images")?;
 
         Ok(body.images)
+    }
+
+    /// List flavors for the given region.
+    /// ECS Querying Flavors: GET https://{Endpoint}/v1/{project_id}/cloudservers/flavors
+    pub async fn list_flavors(&self, region: &str) -> Result<Vec<Flavor>> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("ecs.{region}.myhuaweicloud.com");
+        let path = format!("/v1/{project_id}/cloudservers/flavors?limit=1000");
+
+        let body: FlavorListResponse = self
+            .send_json(Method::GET, &host, &path, None)
+            .await
+            .context("Failed to list flavors")?;
+
+        Ok(body.flavors)
     }
 
     /// Create an ECS instance and return the status + raw response body.
