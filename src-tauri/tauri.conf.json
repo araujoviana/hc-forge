@@ -14,7 +14,9 @@
       {
         "title": "hc-forge",
         "width": 1400,
-        "height": 1000
+        "height": 1000,
+        "maximized": true,
+        "fullscreen": false
       }
     ],
     "security": {

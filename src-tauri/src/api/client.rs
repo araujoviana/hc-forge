@@ -1,13 +1,18 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
+use log::{debug, warn};
 use reqwest::{Client, Method, Request, StatusCode};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
-use log::{debug, warn};
 
 use super::auth::credentials::Credentials;
-use super::models::ecs::{CreateEcsRequest, Flavor, FlavorListResponse};
+use super::models::ecs::{
+    CreateEcsRequest, DeleteEcsRequest, DeleteEcsServer, EcsListResponse, Flavor,
+    FlavorListResponse, StopEcsAction, StopEcsRequest, StopEcsServer,
+};
+use super::models::eip::EipListResponse;
+use super::models::evs::EvsListResponse;
 use super::models::iam::ProjectsResponse;
 use super::models::ims::{Image, ImageListResponse};
 use super::models::vpc::{Subnet, SubnetListResponse, Vpc, VpcListResponse};
@@ -33,10 +38,24 @@ pub struct HwcClient {
 pub struct ImageListFilters {
     pub visibility: Option<String>,
     pub image_type: Option<String>,
+    pub flavor_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ListParams {
+    pub marker: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 fn push_query_param(params: &mut Vec<String>, key: &str, value: &str) {
     if !value.is_empty() {
+        params.push(format!("{key}={value}"));
+    }
+}
+
+fn push_query_param_u32(params: &mut Vec<String>, key: &str, value: Option<u32>) {
+    if let Some(value) = value {
         params.push(format!("{key}={value}"));
     }
 }
@@ -94,6 +113,9 @@ impl HwcClient {
             if let Some(image_type) = filters.image_type.as_deref() {
                 push_query_param(&mut params, "__imagetype", image_type);
             }
+            if let Some(flavor_id) = filters.flavor_id.as_deref() {
+                push_query_param(&mut params, "flavor_id", flavor_id);
+            }
         }
 
         let path = if params.is_empty() {
@@ -125,6 +147,106 @@ impl HwcClient {
         Ok(body.flavors)
     }
 
+    /// List elastic IPs for the given region.
+    /// EIP Querying Elastic IPs: GET /v3/{project_id}/eip/publicips
+    pub async fn list_eips(
+        &self,
+        region: &str,
+        params: Option<ListParams>,
+    ) -> Result<EipListResponse> {
+        let project_id = self.project_id(region).await?;
+        // EIP uses the same endpoint as VPC per Huawei Cloud docs.
+        let host = format!("vpc.{region}.myhuaweicloud.com");
+        let mut query: Vec<String> = Vec::new();
+
+        if let Some(params) = params {
+            if let Some(marker) = params.marker.as_deref() {
+                push_query_param(&mut query, "marker", marker);
+            }
+            push_query_param_u32(&mut query, "limit", params.limit);
+            push_query_param_u32(&mut query, "offset", params.offset);
+        }
+
+        let query_string = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", query.join("&"))
+        };
+
+        let path_v3 = format!("/v3/{project_id}/eip/publicips{query_string}");
+        match self.send_json(Method::GET, &host, &path_v3, None).await {
+            Ok(response) => Ok(response),
+            Err(err) => {
+                warn!("List EIPs v3 failed, falling back to v1: {}", err);
+                let path_v1 = format!("/v1/{project_id}/publicips{query_string}");
+                self.send_json(Method::GET, &host, &path_v1, None)
+                    .await
+                    .context("Failed to list EIPs (v1 fallback)")
+            }
+        }
+    }
+
+    /// List ECS servers for the given region.
+    /// ECS Querying ECS Detail: GET /v1.1/{project_id}/cloudservers/detail
+    pub async fn list_ecses(
+        &self,
+        region: &str,
+        params: Option<ListParams>,
+    ) -> Result<EcsListResponse> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("ecs.{region}.myhuaweicloud.com");
+        let mut query: Vec<String> = Vec::new();
+
+        if let Some(params) = params {
+            if let Some(marker) = params.marker.as_deref() {
+                push_query_param(&mut query, "marker", marker);
+            }
+            push_query_param_u32(&mut query, "limit", params.limit);
+        }
+
+        let base_path = format!("/v1.1/{project_id}/cloudservers/detail");
+        let path = if query.is_empty() {
+            base_path
+        } else {
+            format!("{base_path}?{}", query.join("&"))
+        };
+
+        self.send_json(Method::GET, &host, &path, None)
+            .await
+            .context("Failed to list ECSes")
+    }
+
+    /// List EVS disks for the given region.
+    /// EVS Querying Details About EVS Disks: GET /v2/{project_id}/cloudvolumes/detail
+    pub async fn list_evss(
+        &self,
+        region: &str,
+        params: Option<ListParams>,
+    ) -> Result<EvsListResponse> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("evs.{region}.myhuaweicloud.com");
+        let mut query: Vec<String> = Vec::new();
+
+        if let Some(params) = params {
+            if let Some(marker) = params.marker.as_deref() {
+                push_query_param(&mut query, "marker", marker);
+            }
+            push_query_param_u32(&mut query, "limit", params.limit);
+            push_query_param_u32(&mut query, "offset", params.offset);
+        }
+
+        let base_path = format!("/v2/{project_id}/cloudvolumes/detail");
+        let path = if query.is_empty() {
+            base_path
+        } else {
+            format!("{base_path}?{}", query.join("&"))
+        };
+
+        self.send_json(Method::GET, &host, &path, None)
+            .await
+            .context("Failed to list EVS disks")
+    }
+
     /// Create an ECS instance and return the status + raw response body.
     pub async fn create_ecs(
         &self,
@@ -135,6 +257,73 @@ impl HwcClient {
         let host = format!("ecs.{region}.myhuaweicloud.com");
         let path = format!("/v1/{project_id}/cloudservers");
         let json = serde_json::to_string(body).context("Failed to serialize ECS payload")?;
+
+        self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
+    /// Delete an ECS instance.
+    /// ECS Deleting ECSs in Batches: POST /v1/{project_id}/cloudservers/delete
+    pub async fn delete_ecs(
+        &self,
+        region: &str,
+        server_id: &str,
+        delete_publicip: bool,
+        delete_volume: bool,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("ecs.{region}.myhuaweicloud.com");
+        let path = format!("/v1/{project_id}/cloudservers/delete");
+        let payload = DeleteEcsRequest {
+            servers: vec![DeleteEcsServer {
+                id: server_id.to_string(),
+            }],
+            delete_publicip: Some(delete_publicip),
+            delete_volume: Some(delete_volume),
+        };
+        let json =
+            serde_json::to_string(&payload).context("Failed to serialize ECS delete payload")?;
+
+        self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
+    /// Delete an Elastic IP.
+    /// EIP Deleting an Elastic IP: DELETE /v1/{project_id}/publicips/{publicip_id}
+    pub async fn delete_eip(&self, region: &str, eip_id: &str) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("vpc.{region}.myhuaweicloud.com");
+
+        // Try v3 first; fall back to v1 where needed.
+        let path_v3 = format!("/v3/{project_id}/eip/publicips/{eip_id}");
+        let (status_v3, body_v3) = self.send_raw(Method::DELETE, &host, &path_v3, None).await?;
+        if status_v3 != StatusCode::NOT_FOUND && status_v3 != StatusCode::METHOD_NOT_ALLOWED {
+            return Ok((status_v3, body_v3));
+        }
+
+        let path_v1 = format!("/v1/{project_id}/publicips/{eip_id}");
+        self.send_raw(Method::DELETE, &host, &path_v1, None).await
+    }
+
+    /// Stop ECS instances.
+    /// ECS Batch Stop: POST /v1/{project_id}/cloudservers/action with os-stop body.
+    pub async fn stop_ecs(
+        &self,
+        region: &str,
+        server_id: &str,
+        stop_type: &str,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("ecs.{region}.myhuaweicloud.com");
+        let path = format!("/v1/{project_id}/cloudservers/action");
+        let payload = StopEcsRequest {
+            os_stop: StopEcsAction {
+                servers: vec![StopEcsServer {
+                    id: server_id.to_string(),
+                }],
+                stop_type: stop_type.to_string(),
+            },
+        };
+        let json =
+            serde_json::to_string(&payload).context("Failed to serialize ECS stop payload")?;
 
         self.send_raw(Method::POST, &host, &path, Some(json)).await
     }
@@ -270,7 +459,9 @@ impl HwcClient {
             .header(HEADER_AUTH, authorization);
 
         if let Some(json) = body {
-            req = req.header(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON).body(json);
+            req = req
+                .header(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON)
+                .body(json);
         }
 
         debug!("Signed Huawei Cloud request: host={} path={}", host, path);
@@ -365,4 +556,29 @@ fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonicalize_path, canonicalize_query};
+
+    #[test]
+    fn canonicalize_path_encodes_reserved_and_appends_trailing_slash() {
+        assert_eq!(
+            canonicalize_path("/v1/project id/cloudservers"),
+            "/v1/project%20id/cloudservers/"
+        );
+    }
+
+    #[test]
+    fn canonicalize_query_sorts_and_encodes_params() {
+        let actual = canonicalize_query(Some("z=last&name=a b&a=first"));
+        assert_eq!(actual, "a=first&name=a%20b&z=last");
+    }
+
+    #[test]
+    fn canonicalize_query_handles_missing_values() {
+        let actual = canonicalize_query(Some("foo&bar=baz"));
+        assert_eq!(actual, "bar=baz&foo=");
+    }
 }

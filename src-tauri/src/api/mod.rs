@@ -3,5 +3,5 @@ pub mod auth;
 pub mod client;
 pub mod models;
 
-pub use auth::credentials::{load_credentials, Credentials, CredentialsSource};
-pub use client::{HwcClient, ImageListFilters};
+pub use auth::credentials::{Credentials, CredentialsSource};
+pub use client::{HwcClient, ImageListFilters, ListParams};
