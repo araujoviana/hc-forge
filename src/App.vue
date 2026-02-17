@@ -11,220 +11,88 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { load } from "@tauri-apps/plugin-store";
 import AppLogsPanel from "./components/AppLogsPanel.vue";
+import CceModulePanel from "./components/cce/CceModulePanel.vue";
+import EcsResponsePanel from "./components/ecs/EcsResponsePanel.vue";
+import ObsModulePanel from "./components/obs/ObsModulePanel.vue";
 import ReloadIconButton from "./components/ReloadIconButton.vue";
-import SshTerminalPanel from "./components/SshTerminalPanel.vue";
-
-type VpcOption = { id: string; name: string };
-type SubnetOption = { id: string; name: string; cidr: string };
-type ImageOption = {
-  id: string;
-  name: string;
-  min_disk?: number | null;
-  min_ram?: number | null;
-};
-type FlavorOption = {
-  id: string;
-  name: string;
-  vcpus?: number | null;
-  ram?: number | null;
-  disk?: number | null;
-  os_extra_specs?: Record<string, string>;
-};
-type EipVnic = {
-  private_ip_address?: string | null;
-  device_id?: string | null;
-  vpc_id?: string | null;
-  port_id?: string | null;
-  instance_id?: string | null;
-};
-type EipBandwidth = {
-  size?: number | null;
-  share_type?: string | null;
-  charge_mode?: string | null;
-};
-type EipRecord = {
-  id?: string | null;
-  public_ip_address?: string | null;
-  status?: string | null;
-  associate_instance_id?: string | null;
-  associate_instance_type?: string | null;
-  publicip_pool_name?: string | null;
-  vnic?: EipVnic | null;
-  bandwidth?: EipBandwidth | null;
-};
-type EipListResponse = {
-  publicips?: EipRecord[];
-  total_count?: number | null;
-};
-type EvsAttachment = {
-  id?: string | null;
-  server_id?: string | null;
-  device?: string | null;
-  attached_at?: string | null;
-};
-type EvsVolume = {
-  id?: string | null;
-  name?: string | null;
-  status?: string | null;
-  size?: number | null;
-  volume_type?: string | null;
-  availability_zone?: string | null;
-  bootable?: boolean | null;
-  multiattach?: boolean | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-  attachments?: EvsAttachment[];
-};
-type EvsListResponse = {
-  volumes?: EvsVolume[];
-  count?: number | null;
-};
-type EcsFlavorInfo = {
-  name?: string | null;
-  id?: string | null;
-  vcpus?: number | null;
-  ram?: number | null;
-};
-type EcsServer = {
-  id?: string | null;
-  name?: string | null;
-  status?: string | null;
-  availability_zone?: string | null;
-  flavor?: EcsFlavorInfo | null;
-  created?: string | null;
-};
-type EcsListResponse = {
-  servers?: EcsServer[];
-};
-type CreateEcsResult = { status: string; status_code: number; body: string };
-type CredentialsPayload = { accessKey: string; secretKey: string };
-type DeleteOperationResult = {
-  status: string;
-  status_code?: number | null;
-  body: string;
-};
-type DeleteEcsResult = {
-  ecs: DeleteOperationResult;
-  eip?: DeleteOperationResult | null;
-};
-type StopEcsResult = {
-  ecs: DeleteOperationResult;
-};
-type SshConnectResult = {
-  sessionId: string;
-  host: string;
-  port: number;
-  username: string;
-  connectedAt: string;
-};
-type SshExecResult = {
-  sessionId: string;
-  command: string;
-  stdout: string;
-  stderr: string;
-  exitStatus?: number | null;
-};
-type SshDisconnectResult = {
-  sessionId: string;
-  disconnected: boolean;
-};
-type SshResizeResult = {
-  sessionId: string;
-  cols: number;
-  rows: number;
-};
-type SshSendControlResult = {
-  sessionId: string;
-  control: string;
-  sent: boolean;
-};
-type SshExecOneShotResult = {
-  sessionId: string;
-  host: string;
-  port: number;
-  username: string;
-  command: string;
-  stdout: string;
-  stderr: string;
-  exitStatus?: number | null;
-};
-type SshStreamEventPayload = {
-  sessionId: string;
-  kind: "meta" | "stdout" | "stderr";
-  text: string;
-  at: string;
-};
-type SshSessionInfo = SshConnectResult & {
-  serverId: string;
-  serverName: string;
-};
-type SshTerminalEntry = {
-  id: number;
-  at: string;
-  kind: "meta" | "command" | "stdout" | "stderr";
-  text: string;
-};
-type CachedEntry<T> = {
-  updatedAt: string;
-  data: T;
-};
-type CachedResource =
-  | "images"
-  | "flavors"
-  | "vpcs"
-  | "subnets"
-  | "eips"
-  | "evss"
-  | "ecses";
-type FlavorGroup = {
-  key: string;
-  label: string;
-  flavors: FlavorOption[];
-};
-type LogSource = "app" | "backend" | "runtime";
-type LogLevelName = "trace" | "debug" | "info" | "warn" | "error";
-type AppLogEntry = {
-  id: number;
-  at: string;
-  source: LogSource;
-  level: LogLevelName;
-  message: string;
-};
-type ConfirmDialogKind = "info" | "warning" | "error";
-type ConfirmDialogState = {
-  open: boolean;
-  title: string;
-  message: string;
-  kind: ConfirmDialogKind;
-  okLabel: string;
-  cancelLabel: string;
-};
-type AutoUpdateProgressInfo = {
-  sessionId: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-  percent: number | null;
-  lastLine: string | null;
-};
-type StartupTaskConfig = {
-  region: string;
-  autoUpdate: boolean;
-  setupGuiRdp: boolean;
-  lastStatus: "pending" | "done" | "failed";
-  createdAt: string;
-  updatedAt: string;
-};
-type PendingStartupTaskCreate = {
-  config: StartupTaskConfig;
-  password: string;
-};
-type StoredServerPassword = {
-  version: 1;
-  saltB64: string;
-  ivB64: string;
-  cipherB64: string;
-  updatedAt: string;
-};
+import { AUTO_VM_UPDATE_COMMAND, SETUP_GUI_RDP_COMMAND } from "./constants/startupTasks";
+import {
+  DEFAULT_PLATFORM_DOCKERFILE_PATH,
+  buildDockerContainersCommand,
+  buildDockerImagesCommand,
+  buildDockerSetupCommand,
+  buildNixPackagesCommand,
+  buildNixSetupCommand,
+  buildNixStoreUsageCommand,
+  buildNixVersionCommand,
+  buildMinikubeNodesCommand,
+  buildMinikubePodsCommand,
+  buildMinikubeSetupCommand,
+  buildMinikubeStatusCommand,
+  parseNixPackages,
+  parseDockerContainers,
+  parseDockerImages,
+} from "./utils/platformOps.js";
+import type {
+  CceCluster,
+  CceKubeconfigResult,
+  CceClusterListResponse,
+  CceNatGateway,
+  CceNatGatewayListResponse,
+  CceNodePool,
+  CceNodePoolListResponse,
+  CceOperationResult,
+} from "./types/cce";
+import type {
+  AppLogEntry,
+  AutoUpdateProgressInfo,
+  CachedEntry,
+  CachedResource,
+  ConfirmDialogKind,
+  ConfirmDialogState,
+  CredentialsPayload,
+  CreateEcsResult,
+  DockerContainerSummary,
+  DockerImageSummary,
+  DeleteEcsResult,
+  EcsListResponse,
+  EcsServer,
+  EipListResponse,
+  EipRecord,
+  EvsListResponse,
+  EvsVolume,
+  FlavorGroup,
+  FlavorOption,
+  ImageOption,
+  LogLevelName,
+  LogSource,
+  NixPackageSummary,
+  PendingStartupTaskCreate,
+  ServiceModule,
+  PlatformOpsTab,
+  SshConnectResult,
+  SshDisconnectResult,
+  SshExecOneShotResult,
+  SshExecResult,
+  SshResizeResult,
+  SshSendControlResult,
+  SshSessionInfo,
+  SshStreamEventPayload,
+  SshTerminalEntry,
+  StartupTaskConfig,
+  StopEcsResult,
+  StoredServerPassword,
+  SubnetOption,
+  VpcOption,
+} from "./types/ecs";
+import type {
+  ObsBucket,
+  ObsGetObjectResult,
+  ObsListBucketsResponse,
+  ObsListObjectsResponse,
+  ObsObject,
+  ObsOperationResult,
+} from "./types/obs";
 
 const regions = [
   "sa-brazil-1",
@@ -261,14 +129,66 @@ const DATA_DISK_MIN_GB = 10;
 const DATA_DISK_MAX_GB = 32768;
 const DATA_DISK_MIN_COUNT = 1;
 const DATA_DISK_MAX_COUNT = 24;
+const OBS_MAX_KEYS_MIN = 1;
+const OBS_MAX_KEYS_MAX = 1000;
+const OBS_TOTALS_MAX_PAGES = 10000;
+const OBS_PUT_OBJECT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+const OBS_BUCKET_NAME_REGEX = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+const OBS_BUCKET_STORAGE_CLASSES = ["STANDARD", "WARM", "COLD", "DEEP_ARCHIVE"] as const;
+const OBS_BUCKET_ACLS = ["private", "public-read", "public-read-write"] as const;
+const CCE_CLUSTER_TYPES = ["VirtualMachine", "BareMetal"] as const;
+const CCE_CONTAINER_NETWORK_MODES = ["overlay_l2", "underlay_ipvlan", "vpc-router"] as const;
+const CCE_AUTHENTICATION_MODES = ["rbac", "authenticating_proxy"] as const;
+const CCE_KUBERNETES_VERSIONS = ["v1.27", "v1.28", "v1.29", "v1.30", "v1.31"] as const;
+const CCE_CONTROL_PLANE_FLAVORS = [
+  "cce.s1.small",
+  "cce.s2.small",
+  "cce.s2.medium",
+  "cce.s3.large",
+] as const;
+const CCE_NAT_GATEWAY_SPECS = ["1"] as const;
+const CCE_CONTAINER_NETWORK_CIDR_OPTIONS = [
+  "172.16.0.0/16",
+  "172.17.0.0/16",
+  "172.20.0.0/16",
+  "10.244.0.0/16",
+] as const;
+const CCE_SERVICE_CIDR_OPTIONS = ["10.247.0.0/16", "10.96.0.0/12", "10.32.0.0/16"] as const;
 const DEFAULT_IMAGE_QUERY = "ubuntu 24";
 const DEFAULT_FLAVOR_QUERY = "x1.4u.8g";
 const AUTO_UPDATE_SESSION_PREFIX = "auto-update:";
+const RDP_STARTUP_USERNAME_PREFIX = "hcforge";
+const RDP_STARTUP_USERNAME_SUFFIX_LENGTH = 6;
 const STORE_KEY_PASSWORDS_BY_SERVER = "serverPasswords.v1";
 const STORE_KEY_STARTUP_TASKS_BY_SERVER = "startupTasks.v1";
 const PBKDF2_ITERATIONS = 200_000;
 const PBKDF2_SALT_BYTES = 16;
 const AES_GCM_IV_BYTES = 12;
+const serviceModules: Array<{
+  id: ServiceModule;
+  title: string;
+  chip: string;
+  subtitle: string;
+}> = [
+  {
+    id: "ecs",
+    title: "Elastic Cloud Server",
+    chip: "ECS Module",
+    subtitle: "Create and operate compute instances with integrated SSH tools.",
+  },
+  {
+    id: "cce",
+    title: "Cloud Container Engine",
+    chip: "CCE Module",
+    subtitle: "Create and manage Kubernetes clusters, node pools, and CCE jobs.",
+  },
+  {
+    id: "obs",
+    title: "Object Storage Service",
+    chip: "OBS Module",
+    subtitle: "Manage buckets, upload objects, and perform object CRUD in one place.",
+  },
+];
 const USER_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
   month: "short",
@@ -277,94 +197,6 @@ const USER_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
   second: "2-digit",
 });
-const AUTO_VM_UPDATE_COMMAND = `
-echo "[hc-forge] [progress] 2 Startup package update started."
-if command -v apt-get >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 8 Package manager: apt-get"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update
-  echo "[hc-forge] [progress] 26 apt metadata refreshed."
-  apt-get -y -o Dpkg::Options::=--force-confnew dist-upgrade
-  echo "[hc-forge] [progress] 78 apt dist-upgrade complete."
-  apt-get -y autoremove --purge
-  echo "[hc-forge] [progress] 92 apt autoremove complete."
-elif command -v dnf >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 8 Package manager: dnf"
-  dnf -y upgrade --refresh
-  echo "[hc-forge] [progress] 92 dnf upgrade complete."
-elif command -v yum >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 8 Package manager: yum"
-  yum -y update
-  echo "[hc-forge] [progress] 92 yum update complete."
-elif command -v zypper >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 8 Package manager: zypper"
-  zypper --non-interactive refresh
-  echo "[hc-forge] [progress] 26 zypper refresh complete."
-  zypper --non-interactive update
-  echo "[hc-forge] [progress] 92 zypper update complete."
-elif command -v pacman >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 8 Package manager: pacman"
-  pacman -Syu --noconfirm
-  echo "[hc-forge] [progress] 92 pacman upgrade complete."
-elif command -v apk >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 8 Package manager: apk"
-  apk update
-  echo "[hc-forge] [progress] 28 apk metadata refreshed."
-  apk upgrade
-  echo "[hc-forge] [progress] 92 apk upgrade complete."
-else
-  echo "No supported package manager found for automatic updates."
-  exit 2
-fi
-echo "[hc-forge] [progress] 100 Startup package update finished."
-`.trim();
-const SETUP_GUI_RDP_COMMAND = `
-echo "[hc-forge] [progress] 5 Desktop+RDP setup started."
-if command -v apt-get >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 12 Package manager: apt-get"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update
-  echo "[hc-forge] [progress] 26 apt metadata refreshed."
-  apt-get install -y --no-install-recommends xorg xrdp xterm icewm dbus-x11
-  echo "[hc-forge] [progress] 78 apt packages installed."
-elif command -v dnf >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 12 Package manager: dnf"
-  dnf -y install xrdp xorgxrdp xorg-x11-server-Xorg xterm icewm || dnf -y install xrdp xterm icewm
-  echo "[hc-forge] [progress] 78 dnf packages installed."
-elif command -v yum >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 12 Package manager: yum"
-  yum -y install xrdp xorgxrdp xterm icewm || yum -y install xrdp xterm icewm
-  echo "[hc-forge] [progress] 78 yum packages installed."
-elif command -v zypper >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 12 Package manager: zypper"
-  zypper --non-interactive refresh
-  zypper --non-interactive install -y xrdp xorg-x11-server xterm icewm
-  echo "[hc-forge] [progress] 78 zypper packages installed."
-elif command -v pacman >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 12 Package manager: pacman"
-  pacman -Syu --noconfirm xorg-server xorg-xinit xterm icewm xrdp
-  echo "[hc-forge] [progress] 78 pacman packages installed."
-elif command -v apk >/dev/null 2>&1; then
-  echo "[hc-forge] [progress] 12 Package manager: apk"
-  apk update
-  apk add xrdp xorg-server xinit xterm icewm dbus
-  echo "[hc-forge] [progress] 78 apk packages installed."
-else
-  echo "No supported package manager found for Desktop+RDP setup."
-  exit 2
-fi
-
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl enable xrdp || true
-  systemctl restart xrdp || true
-elif command -v rc-update >/dev/null 2>&1; then
-  rc-update add xrdp default || true
-  rc-service xrdp restart || true
-elif command -v service >/dev/null 2>&1; then
-  service xrdp restart || true
-fi
-echo "[hc-forge] [progress] 100 Desktop+RDP setup finished."
-`.trim();
 
 const region = ref("sa-brazil-1");
 const name = ref("");
@@ -393,11 +225,14 @@ const passwordSectionOpen = ref(false);
 const storageSectionOpen = ref(false);
 const imageFilterSectionOpen = ref(false);
 const networkSectionOpen = ref(false);
+const activeModule = ref<ServiceModule>("ecs");
+const moduleShiftDirection = ref<"next" | "prev">("next");
 
 const useGeneratedPassword = ref(true);
 const generatedPassword = ref(generatePassword());
 const customPassword = ref("");
 const passwordCopyFeedback = ref<string | null>(null);
+const quickCopyFeedback = ref<string | null>(null);
 const showAdminPassword = ref(false);
 
 const vpcs = ref<VpcOption[]>([]);
@@ -419,6 +254,7 @@ const loadingEvss = ref(false);
 const loadingEcses = ref(false);
 const savingCredentials = ref(false);
 const loadingAll = ref(false);
+const loadingResponse = ref(false);
 const creating = ref(false);
 const deletingServerId = ref<string | null>(null);
 const stoppingServerId = ref<string | null>(null);
@@ -461,6 +297,36 @@ const sshCommandHistory = ref<string[]>([]);
 const sshHistoryCursor = ref(-1);
 const sshTerminalEntries = ref<SshTerminalEntry[]>([]);
 const sshLastResize = ref<{ cols: number; rows: number } | null>(null);
+const platformPanelOpen = ref(false);
+const platformPanelServerId = ref<string | null>(null);
+const platformBusyServerId = ref<string | null>(null);
+const platformActionLabel = ref<string | null>(null);
+const platformError = ref<string | null>(null);
+const platformInfo = ref<string | null>(null);
+const platformActiveTab = ref<PlatformOpsTab>("docker");
+const platformDockerInstallEnabled = ref(true);
+const platformDockerImages = ref<DockerImageSummary[]>([]);
+const platformDockerContainers = ref<DockerContainerSummary[]>([]);
+const platformDockerfileTargetPath = DEFAULT_PLATFORM_DOCKERFILE_PATH;
+const platformDockerfileContent = ref("");
+const platformMinikubeInstallEnabled = ref(true);
+const platformMinikubeEnsureDocker = ref(true);
+const platformMinikubeAutoStart = ref(true);
+const platformMinikubeProfile = ref("hcforge");
+const platformMinikubeDriver = ref<"docker" | "none">("docker");
+const platformMinikubeCpus = ref(2);
+const platformMinikubeMemoryMb = ref(4096);
+const platformMinikubeK8sVersion = ref("");
+const platformMinikubeStatus = ref("");
+const platformMinikubeNodes = ref("");
+const platformMinikubePods = ref("");
+const platformNixInstallEnabled = ref(true);
+const platformNixEnableFlakes = ref(true);
+const platformNixRunGarbageCollect = ref(false);
+const platformNixPackagesInput = ref("git ripgrep");
+const platformNixVersion = ref("");
+const platformNixPackages = ref<NixPackageSummary[]>([]);
+const platformNixStoreUsage = ref("");
 const createSummary = ref<{
   status: string;
   statusCode: number;
@@ -473,6 +339,81 @@ const pollingAttempts = ref(0);
 const pollingStatus = ref<string | null>(null);
 const pollingError = ref<string | null>(null);
 const pollingActiveRefreshDone = ref(false);
+
+const cceClusterName = ref("");
+const cceClusterVersion = ref<(typeof CCE_KUBERNETES_VERSIONS)[number]>("v1.29");
+const cceClusterFlavor = ref<(typeof CCE_CONTROL_PLANE_FLAVORS)[number]>("cce.s2.small");
+const cceClusterType = ref<(typeof CCE_CLUSTER_TYPES)[number]>("VirtualMachine");
+const cceClusterDescription = ref("");
+const cceClusterTagEnv = ref("");
+const cceClusterVpcId = ref("");
+const cceClusterSubnetId = ref("");
+const cceClusterContainerNetworkMode = ref<(typeof CCE_CONTAINER_NETWORK_MODES)[number]>(
+  "overlay_l2"
+);
+const cceClusterContainerNetworkCidr = ref<(typeof CCE_CONTAINER_NETWORK_CIDR_OPTIONS)[number]>(
+  "172.16.0.0/16"
+);
+const cceClusterServiceCidr = ref<(typeof CCE_SERVICE_CIDR_OPTIONS)[number]>("10.247.0.0/16");
+const cceClusterAuthenticationMode = ref<(typeof CCE_AUTHENTICATION_MODES)[number]>("rbac");
+const cceVpcs = ref<VpcOption[]>([]);
+const cceSubnets = ref<SubnetOption[]>([]);
+const cceLoadingVpcs = ref(false);
+const cceLoadingSubnets = ref(false);
+const cceCreatingCluster = ref(false);
+const cceClusters = ref<CceCluster[]>([]);
+const cceLoadingClusters = ref(false);
+const cceDeletingClusterId = ref<string | null>(null);
+const cceSelectedClusterId = ref("");
+const cceNodePools = ref<CceNodePool[]>([]);
+const cceLoadingNodePools = ref(false);
+const cceLastResult = ref<CceOperationResult | null>(null);
+const cceLastJobId = ref("");
+const cceJobResult = ref<CceOperationResult | null>(null);
+const cceLoadingJob = ref(false);
+const cceErrorMsg = ref("");
+const cceNatGatewayName = ref("cce-nat-gateway");
+const cceNatGatewayDescription = ref("");
+const cceNatGatewaySpec = ref<(typeof CCE_NAT_GATEWAY_SPECS)[number]>("1");
+const cceNatGateways = ref<CceNatGateway[]>([]);
+const cceLoadingNatGateways = ref(false);
+const cceCreatingNatGateway = ref(false);
+const cceDeletingNatGatewayId = ref<string | null>(null);
+const cceAccessEips = ref<EipRecord[]>([]);
+const cceLoadingAccessEips = ref(false);
+const cceSelectedAccessEipId = ref("");
+const cceBindingAccessEip = ref(false);
+const cceDownloadingKubeconfig = ref(false);
+
+const obsBucketName = ref("");
+const obsDefaultStorageClass = ref<(typeof OBS_BUCKET_STORAGE_CLASSES)[number]>("STANDARD");
+const obsBucketAcl = ref<(typeof OBS_BUCKET_ACLS)[number]>("private");
+const obsBuckets = ref<ObsBucket[]>([]);
+const obsLoadingBuckets = ref(false);
+const obsCreatingBucket = ref(false);
+const obsDeletingBucket = ref<string | null>(null);
+const obsSelectedBucket = ref("");
+const obsObjects = ref<ObsObject[]>([]);
+const obsLoadingObjects = ref(false);
+const obsDeletingObject = ref<string | null>(null);
+const obsDownloadingObject = ref<string | null>(null);
+const obsUploadingObject = ref(false);
+const obsObjectPrefix = ref("");
+const obsObjectMarker = ref("");
+const obsObjectMaxKeys = ref(200);
+const obsUploadObjectKey = ref("");
+const obsUploadContentType = ref("");
+const obsUploadFile = ref<File | null>(null);
+const obsUploadProgress = ref<number | null>(null);
+const obsDownloadProgress = ref<number | null>(null);
+const obsLastResult = ref<ObsOperationResult | null>(null);
+const obsErrorMsg = ref("");
+let obsObjectsLoadToken = 0;
+const obsBucketTotalSizeBytes = ref<number | null>(null);
+const obsBucketTotalObjectCount = ref<number | null>(null);
+const obsLoadingBucketTotals = ref(false);
+const obsBucketTotalsError = ref<string | null>(null);
+let obsBucketTotalsLoadToken = 0;
 
 const cacheUpdatedAt = ref<Record<CachedResource, string | null>>({
   images: null,
@@ -487,6 +428,7 @@ const nowMs = ref(Date.now());
 
 let pollingTimer: number | null = null;
 let passwordFeedbackTimer: number | null = null;
+let quickCopyFeedbackTimer: number | null = null;
 let relativeClockTimer: number | null = null;
 let sshResizeTimer: number | null = null;
 let logSeq = 0;
@@ -511,6 +453,15 @@ const canWatch = computed(
     !!createSummary.value?.serverId ||
     !!createdServer.value?.id ||
     ecses.value.length > 0
+);
+const activeModuleIndex = computed(() =>
+  serviceModules.findIndex((module) => module.id === activeModule.value)
+);
+const activeModuleMeta = computed(
+  () => serviceModules[activeModuleIndex.value] ?? serviceModules[0]
+);
+const moduleTransitionName = computed(() =>
+  moduleShiftDirection.value === "next" ? "module-slide-next" : "module-slide-prev"
 );
 
 const selectedPassword = computed(() =>
@@ -722,9 +673,98 @@ const sshConnectedToPanel = computed(() => {
   return sshSession.value.serverId === sshPanelServerId.value;
 });
 
+const platformPanelServer = computed(() => {
+  const serverId = platformPanelServerId.value;
+  if (!serverId) {
+    return null;
+  }
+  return ecses.value.find((item) => item.id === serverId) ?? null;
+});
+
+const platformPanelHost = computed(() => {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return null;
+  }
+  return findSshHostForServer(server);
+});
+
+const platformPanelBusy = computed(() => {
+  if (!platformPanelServerId.value) {
+    return false;
+  }
+  return platformBusyServerId.value === platformPanelServerId.value;
+});
+
 const orderedLogEntries = computed(() =>
   [...logEntries.value].sort((a, b) => b.id - a.id)
 );
+const obsBucketNameError = computed(() => validateObsBucketName(obsBucketName.value));
+const obsCanCreateBucket = computed(
+  () => !obsBucketNameError.value && !obsCreatingBucket.value
+);
+const obsSelectedBucketRecord = computed(
+  () => obsBuckets.value.find((bucket) => bucket.name === obsSelectedBucket.value) ?? null
+);
+const obsCanLoadObjects = computed(
+  () => !!obsSelectedBucket.value && !obsLoadingObjects.value
+);
+const obsCanUploadObject = computed(
+  () =>
+    !!obsSelectedBucket.value &&
+    !!obsUploadFile.value &&
+    !!obsUploadObjectKey.value.trim() &&
+    !obsUploadingObject.value
+);
+const obsResolvedUploadContentType = computed(() => {
+  const custom = obsUploadContentType.value.trim();
+  if (custom) {
+    return custom;
+  }
+  const detected = obsUploadFile.value?.type?.trim();
+  if (detected) {
+    return detected;
+  }
+  return "application/octet-stream";
+});
+const obsSinglePutLimitLabel = computed(() => formatObsObjectSize(OBS_PUT_OBJECT_MAX_BYTES));
+const cceCanCreateCluster = computed(
+  () =>
+    !!cceClusterName.value.trim() &&
+    !!cceClusterVersion.value.trim() &&
+    !!cceClusterFlavor.value.trim() &&
+    !!cceClusterVpcId.value &&
+    !!cceClusterSubnetId.value &&
+    !!cceClusterContainerNetworkCidr.value.trim() &&
+    !!cceClusterServiceCidr.value.trim() &&
+    !cceCreatingCluster.value
+);
+const cceCanCreateNatGateway = computed(
+  () =>
+    !!cceNatGatewayName.value.trim() &&
+    !!cceClusterVpcId.value &&
+    !!cceClusterSubnetId.value &&
+    !cceCreatingNatGateway.value &&
+    cceNatGateways.value.length === 0
+);
+const cceSelectedCluster = computed(
+  () =>
+    cceClusters.value.find((cluster) => cceClusterId(cluster) === cceSelectedClusterId.value) ??
+    null
+);
+const cceSelectedClusterExternalIp = computed(() => {
+  const cluster = cceSelectedCluster.value;
+  if (!cluster) {
+    return "";
+  }
+  const spec = cceAsObject(cluster.spec);
+  return cceText(
+    spec.clusterExternalIP ??
+      spec.clusterExternalIp ??
+      spec.cluster_external_i_p ??
+      spec.cluster_external_ip
+  );
+});
 
 watch(imageMinDisk, (minDisk) => {
   if (!rootVolumeSize.value || rootVolumeSize.value < minDisk) {
@@ -778,8 +818,21 @@ watch(dataDiskCount, (value) => {
   }
 });
 
+watch(obsObjectMaxKeys, (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    obsObjectMaxKeys.value = OBS_MAX_KEYS_MIN;
+    return;
+  }
+  const sanitized = Math.min(OBS_MAX_KEYS_MAX, Math.max(OBS_MAX_KEYS_MIN, Math.trunc(parsed)));
+  if (sanitized !== value) {
+    obsObjectMaxKeys.value = sanitized;
+  }
+});
+
 watch(region, async () => {
   stopPolling();
+  closePlatformPanel();
   deleteMsg.value = null;
   pendingStartupTaskCreate.value = null;
   pendingCreatedServerPassword.value = null;
@@ -791,9 +844,95 @@ watch(region, async () => {
   autoUpdateSessionToServerId.clear();
   autoUpdateSessionLineBuffer.clear();
 
+  obsErrorMsg.value = "";
+  obsLastResult.value = null;
+  obsSelectedBucket.value = "";
+  obsObjects.value = [];
+  obsBucketTotalSizeBytes.value = null;
+  obsBucketTotalObjectCount.value = null;
+  obsBucketTotalsError.value = null;
+  obsLoadingBucketTotals.value = false;
+  obsBucketTotalsLoadToken += 1;
+  cceErrorMsg.value = "";
+  cceLastResult.value = null;
+  cceJobResult.value = null;
+  cceLastJobId.value = "";
+  cceClusters.value = [];
+  cceSelectedClusterId.value = "";
+  cceNodePools.value = [];
+  cceVpcs.value = [];
+  cceSubnets.value = [];
+  cceClusterVpcId.value = "";
+  cceClusterSubnetId.value = "";
+  cceNatGateways.value = [];
+  cceNatGatewayDescription.value = "";
+  cceNatGatewayName.value = "cce-nat-gateway";
+  cceNatGatewaySpec.value = "1";
+  cceLoadingNatGateways.value = false;
+  cceCreatingNatGateway.value = false;
+  cceDeletingNatGatewayId.value = null;
+  cceAccessEips.value = [];
+  cceLoadingAccessEips.value = false;
+  cceSelectedAccessEipId.value = "";
+  cceBindingAccessEip.value = false;
+  cceDownloadingKubeconfig.value = false;
+
+  if (activeModule.value === "obs") {
+    await loadObsBuckets();
+    return;
+  }
+  if (activeModule.value === "cce") {
+    await loadCceVpcs({ log: false });
+    await loadCceClusters({ log: false });
+    await loadCceAccessEips({ log: false });
+    return;
+  }
+
   const hadCache = await hydrateRegionCache();
   if (!hadCache) {
     await loadAll();
+  }
+});
+
+watch(activeModule, async (nextModule) => {
+  if (nextModule === "obs") {
+    obsErrorMsg.value = "";
+    if (!obsBuckets.value.length) {
+      await loadObsBuckets();
+    }
+    return;
+  }
+  if (nextModule === "cce") {
+    cceErrorMsg.value = "";
+    const jobs: Array<Promise<void>> = [];
+    if (!cceVpcs.value.length) {
+      jobs.push(loadCceVpcs({ log: false }));
+    }
+    if (!cceClusters.value.length) {
+      jobs.push(loadCceClusters({ log: false }));
+    }
+    if (jobs.length > 0) {
+      await Promise.all(jobs);
+    }
+    if (cceSelectedClusterId.value && !cceAccessEips.value.length) {
+      await loadCceAccessEips({ log: false });
+    }
+    if (cceClusterVpcId.value && cceClusterSubnetId.value && !cceNatGateways.value.length) {
+      await loadCceNatGateways({ log: false });
+    }
+    return;
+  }
+
+  const hasEcsData =
+    images.value.length > 0 ||
+    flavors.value.length > 0 ||
+    vpcs.value.length > 0 ||
+    ecses.value.length > 0;
+  if (!hasEcsData) {
+    const hadCache = await hydrateRegionCache();
+    if (!hadCache) {
+      await loadAll();
+    }
   }
 });
 
@@ -832,10 +971,43 @@ watch(selectedVpc, async (nextVpc, previousVpc) => {
   }
 });
 
+watch(cceClusterVpcId, async (nextVpc, previousVpc) => {
+  if (nextVpc === previousVpc) {
+    return;
+  }
+  cceSubnets.value = [];
+  cceClusterSubnetId.value = "";
+  cceNatGateways.value = [];
+  cceDeletingNatGatewayId.value = null;
+  if (!nextVpc) {
+    return;
+  }
+  await loadCceSubnets({ log: false });
+});
+
+watch(cceClusterSubnetId, async (nextSubnet, previousSubnet) => {
+  if (nextSubnet === previousSubnet) {
+    return;
+  }
+  await loadCceNatGateways({ log: false });
+});
+
+watch([cceAccessEips, cceSelectedClusterExternalIp], () => {
+  syncCceSelectedAccessEip();
+});
+
 watch(ecses, (servers) => {
   cleanupStartupTaskTracking(servers);
   queueStartupTaskCandidates(servers);
   void drainAutoUpdateQueue();
+
+  const activePlatformServerId = platformPanelServerId.value;
+  if (activePlatformServerId) {
+    const platformServerExists = servers.some((server) => server.id === activePlatformServerId);
+    if (!platformServerExists) {
+      closePlatformPanel();
+    }
+  }
 
   const activeServerId = sshPanelServerId.value;
   if (!activeServerId) {
@@ -1028,6 +1200,10 @@ onBeforeUnmount(() => {
     window.clearTimeout(passwordFeedbackTimer);
     passwordFeedbackTimer = null;
   }
+  if (quickCopyFeedbackTimer !== null) {
+    window.clearTimeout(quickCopyFeedbackTimer);
+    quickCopyFeedbackTimer = null;
+  }
 
   if (relativeClockTimer !== null) {
     window.clearInterval(relativeClockTimer);
@@ -1094,6 +1270,34 @@ function generatePassword(length = 18): string {
   return chars.join("");
 }
 
+function generateRdpUsername(length = RDP_STARTUP_USERNAME_SUFFIX_LENGTH): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const targetLength = Math.max(4, length);
+  let suffix = "";
+  for (let index = 0; index < targetLength; index += 1) {
+    suffix += chars[randomInt(chars.length)];
+  }
+  return `${RDP_STARTUP_USERNAME_PREFIX}${suffix}`;
+}
+
+function normalizeRdpUsername(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "")
+    .slice(0, 32);
+  if (!normalized) {
+    return null;
+  }
+  if (!normalized.startsWith(RDP_STARTUP_USERNAME_PREFIX)) {
+    return null;
+  }
+  return normalized;
+}
+
 function validatePassword(password: string): string | null {
   if (!password) {
     return "Administrator password is required.";
@@ -1135,6 +1339,62 @@ function setPasswordFeedback(message: string | null) {
   }
 }
 
+function setQuickCopyFeedback(message: string | null) {
+  quickCopyFeedback.value = message;
+
+  if (quickCopyFeedbackTimer !== null) {
+    window.clearTimeout(quickCopyFeedbackTimer);
+    quickCopyFeedbackTimer = null;
+  }
+
+  if (message) {
+    quickCopyFeedbackTimer = window.setTimeout(() => {
+      quickCopyFeedback.value = null;
+      quickCopyFeedbackTimer = null;
+    }, 2400);
+  }
+}
+
+async function copyTextToClipboard(value: string, label: string): Promise<boolean> {
+  const text = value.trim();
+  if (!text) {
+    addLog("app", "warn", `Copy requested for empty ${label}.`);
+    return false;
+  }
+
+  try {
+    await writeText(text);
+    addLog("app", "info", `Copied ${label} to clipboard via Tauri clipboard plugin.`);
+    return true;
+  } catch (err) {
+    addLog(
+      "app",
+      "warn",
+      `Clipboard plugin write failed while copying ${label}: ${errorToString(err)}`
+    );
+    if (isTauriRuntime()) {
+      return false;
+    }
+  }
+
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      addLog("app", "info", `Copied ${label} to clipboard via browser clipboard API.`);
+      return true;
+    } catch (err) {
+      addLog(
+        "app",
+        "error",
+        `Browser clipboard fallback failed while copying ${label}: ${errorToString(err)}`
+      );
+    }
+  }
+
+  addLog("app", "error", `Failed to copy ${label} to clipboard.`);
+  return false;
+}
+
 function regeneratePassword() {
   generatedPassword.value = generatePassword();
   setPasswordFeedback(null);
@@ -1148,37 +1408,1555 @@ async function copyCurrentPassword() {
     return;
   }
 
-  try {
-    await writeText(password);
+  const copied = await copyTextToClipboard(password, "password");
+  if (copied) {
     setPasswordFeedback("Password copied.");
-    addLog("app", "info", "Copied password to clipboard via Tauri clipboard plugin.");
     return;
-  } catch (err) {
-    const message = errorToString(err);
-    addLog(
-      "app",
-      "warn",
-      `Clipboard plugin write failed: ${message}`
-    );
-    if (isTauriRuntime()) {
-      setPasswordFeedback("Copy failed. Clipboard permission is unavailable.");
-      return;
-    }
-  }
-
-  if (navigator.clipboard?.writeText && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(password);
-      setPasswordFeedback("Password copied.");
-      addLog("app", "info", "Copied password to clipboard via browser clipboard API.");
-      return;
-    } catch (err) {
-      addLog("app", "error", `Browser clipboard fallback failed: ${errorToString(err)}`);
-    }
   }
 
   setPasswordFeedback("Copy failed. Clipboard permission is unavailable.");
   addLog("app", "error", "Failed to copy password to clipboard.");
+}
+
+async function copyEipAddress(address: string | null | undefined) {
+  const copied = await copyTextToClipboard(address ?? "", "EIP address");
+  if (copied) {
+    setQuickCopyFeedback("EIP copied.");
+  } else {
+    setQuickCopyFeedback("EIP copy failed.");
+  }
+}
+
+function loginUsernameForServer(serverId: string): string {
+  return startupTaskRdpUserForServer(serverId) ?? "root";
+}
+
+async function copyLoginUsernameForServer(serverId: string) {
+  const username = loginUsernameForServer(serverId);
+  const copied = await copyTextToClipboard(username, "VM username");
+  if (copied) {
+    setQuickCopyFeedback("Username copied.");
+  } else {
+    setQuickCopyFeedback("Username copy failed.");
+  }
+}
+
+function hasSavedPasswordForServer(serverId: string): boolean {
+  return !!serverPasswordFor(serverId);
+}
+
+async function copyPasswordForServer(serverId: string) {
+  const password = serverPasswordFor(serverId);
+  if (!password) {
+    setQuickCopyFeedback("No saved password for this ECS.");
+    addLog("app", "warn", `Password copy requested without saved password for server ${serverId}.`);
+    return;
+  }
+
+  const copied = await copyTextToClipboard(password, "VM password");
+  if (copied) {
+    setQuickCopyFeedback("Password copied.");
+  } else {
+    setQuickCopyFeedback("Password copy failed.");
+  }
+}
+
+function cycleServiceModule(direction: "next" | "prev") {
+  const total = serviceModules.length;
+  if (total < 2) {
+    return;
+  }
+  moduleShiftDirection.value = direction;
+  const index = activeModuleIndex.value >= 0 ? activeModuleIndex.value : 0;
+  const offset = direction === "next" ? 1 : -1;
+  const nextIndex = (index + offset + total) % total;
+  activeModule.value = serviceModules[nextIndex].id;
+}
+
+function validateObsBucketName(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return "Bucket name is required.";
+  }
+  if (normalized.length < 3 || normalized.length > 63) {
+    return "Bucket name must be 3-63 characters.";
+  }
+  if (!OBS_BUCKET_NAME_REGEX.test(normalized)) {
+    return "Use lowercase letters, numbers, dots, and dashes only.";
+  }
+  if (normalized.includes("..")) {
+    return "Bucket name cannot contain consecutive dots.";
+  }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(normalized)) {
+    return "Bucket name cannot be an IPv4 address.";
+  }
+  return null;
+}
+
+function normalizeObsBucketName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeObsObjectKey(value: string): string {
+  return value.trim().replace(/^\/+/, "");
+}
+
+function formatObsObjectSize(sizeBytes: number | null | undefined): string {
+  const bytes = Number(sizeBytes ?? 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const kb = 1024;
+  const mb = 1024 * 1024;
+  const gb = 1024 * 1024 * 1024;
+  const tb = 1024 * 1024 * 1024 * 1024;
+  if (bytes < kb) {
+    return `${Math.round(bytes)} B`;
+  }
+  if (bytes < mb) {
+    return `${(bytes / kb).toFixed(2)} KB`;
+  }
+  if (bytes >= tb) {
+    return `${(bytes / tb).toFixed(2)} TB`;
+  }
+  if (bytes >= gb) {
+    return `${(bytes / gb).toFixed(2)} GB`;
+  }
+  return `${(bytes / mb).toFixed(2)} MB`;
+}
+
+function cceAsObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
+function cceText(value: unknown, fallback = ""): string {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  return value.trim() || fallback;
+}
+
+function cceClusterId(cluster: CceCluster): string {
+  const metadata = cceAsObject(cluster.metadata);
+  return cceText(metadata.id ?? metadata.uid);
+}
+
+function cceClusterDisplayName(cluster: CceCluster): string {
+  const metadata = cceAsObject(cluster.metadata);
+  return cceText(metadata.name, cceClusterId(cluster) || "unnamed-cluster");
+}
+
+function cceNodePoolId(nodePool: CceNodePool): string {
+  const metadata = cceAsObject(nodePool.metadata);
+  return cceText(metadata.id ?? metadata.uid);
+}
+
+function cceNodePoolName(nodePool: CceNodePool): string {
+  const metadata = cceAsObject(nodePool.metadata);
+  return cceText(metadata.name, cceNodePoolId(nodePool) || "node-pool");
+}
+
+function cceNatGatewayId(gateway: CceNatGateway): string {
+  return cceText(gateway.id);
+}
+
+function cceNatGatewayNameValue(gateway: CceNatGateway): string {
+  return cceText(gateway.name, cceNatGatewayId(gateway) || "nat-gateway");
+}
+
+function cceEipId(value: EipRecord): string {
+  return cceText(value.id);
+}
+
+function cceEipAddress(value: EipRecord): string {
+  return cceText(value.public_ip_address);
+}
+
+function cceResultSummary(resultValue: CceOperationResult): string {
+  return `${resultValue.status_code} ${resultValue.status}`;
+}
+
+function syncCceSelectedAccessEip() {
+  const selectedId = cceSelectedAccessEipId.value.trim();
+  if (selectedId && cceAccessEips.value.some((item) => cceEipId(item) === selectedId)) {
+    return;
+  }
+  const clusterIp = cceSelectedClusterExternalIp.value.trim();
+  if (clusterIp) {
+    const matched = cceAccessEips.value.find((item) => cceEipAddress(item) === clusterIp);
+    const matchedId = matched ? cceEipId(matched) : "";
+    if (matchedId) {
+      cceSelectedAccessEipId.value = matchedId;
+      return;
+    }
+  }
+  cceSelectedAccessEipId.value = cceEipId(cceAccessEips.value[0] ?? {});
+}
+
+function cceKubeconfigFileName(): string {
+  const baseName = cceSelectedCluster.value
+    ? cceClusterDisplayName(cceSelectedCluster.value)
+    : cceSelectedClusterId.value;
+  const sanitized = cceText(baseName, "cce-cluster")
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${sanitized || "cce-cluster"}-kubeconfig.yaml`;
+}
+
+function extractCceClusterId(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const data = payload as Record<string, unknown>;
+  const metadata = cceAsObject(data.metadata);
+  const metadataId = cceText(metadata.id ?? metadata.uid);
+  if (metadataId) {
+    return metadataId;
+  }
+  if (data.cluster && typeof data.cluster === "object") {
+    const cluster = data.cluster as Record<string, unknown>;
+    const clusterMeta = cceAsObject(cluster.metadata);
+    const nestedId = cceText(clusterMeta.id ?? clusterMeta.uid ?? cluster.id);
+    if (nestedId) {
+      return nestedId;
+    }
+  }
+  const direct = cceText(data.cluster_id ?? data.clusterId ?? data.id);
+  return direct || null;
+}
+
+function extractCceJobId(payload: unknown): string | null {
+  const base = extractJobId(payload);
+  if (base) {
+    return base;
+  }
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const data = payload as Record<string, unknown>;
+  const status = cceAsObject(data.status);
+  const nested = cceText(
+    status.job_id ?? status.jobId ?? status.jobID ?? data.jobId ?? data.task_id ?? data.taskId
+  );
+  return nested || null;
+}
+
+async function loadCceVpcs(options: { log?: boolean } = {}) {
+  const shouldLog = options.log ?? true;
+  cceLoadingVpcs.value = true;
+  if (shouldLog) {
+    addLog("app", "info", `Listing CCE VPCs for region ${region.value}.`);
+  }
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = { region: region.value };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const data = await invoke<VpcOption[]>("list_vpcs", args);
+    cceVpcs.value = data;
+    const knownVpc = cceVpcs.value.some((item) => item.id === cceClusterVpcId.value)
+      ? cceClusterVpcId.value
+      : "";
+    const nextVpc = knownVpc || cceVpcs.value[0]?.id || "";
+    if (nextVpc !== cceClusterVpcId.value) {
+      cceClusterVpcId.value = nextVpc;
+    } else if (nextVpc && !cceSubnets.value.length) {
+      await loadCceSubnets({ log: false });
+    }
+  } catch (err) {
+    const message = `Failed to load CCE VPCs: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceLoadingVpcs.value = false;
+  }
+}
+
+async function loadCceSubnets(options: { log?: boolean } = {}) {
+  if (!cceClusterVpcId.value) {
+    cceSubnets.value = [];
+    cceClusterSubnetId.value = "";
+    return;
+  }
+  const shouldLog = options.log ?? true;
+  cceLoadingSubnets.value = true;
+  if (shouldLog) {
+    addLog(
+      "app",
+      "info",
+      `Listing CCE subnets for VPC ${cceClusterVpcId.value} in ${region.value}.`
+    );
+  }
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      region: region.value,
+      vpcId: cceClusterVpcId.value,
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const data = await invoke<SubnetOption[]>("list_subnets", args);
+    cceSubnets.value = data;
+    if (!cceSubnets.value.some((item) => item.id === cceClusterSubnetId.value)) {
+      cceClusterSubnetId.value = cceSubnets.value[0]?.id ?? "";
+    }
+  } catch (err) {
+    const message = `Failed to load CCE subnets: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceLoadingSubnets.value = false;
+  }
+}
+
+async function loadCceClusters(options: { log?: boolean } = {}) {
+  const shouldLog = options.log ?? true;
+  cceLoadingClusters.value = true;
+  cceErrorMsg.value = "";
+  if (shouldLog) {
+    addLog("app", "info", `Listing CCE clusters for region ${region.value}.`);
+  }
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = { region: region.value };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const response = await invoke<CceClusterListResponse>("list_cce_clusters", args);
+    cceClusters.value = [...(response.items ?? [])].sort((left, right) =>
+      cceClusterDisplayName(left).localeCompare(cceClusterDisplayName(right))
+    );
+    if (
+      cceSelectedClusterId.value &&
+      !cceClusters.value.some((cluster) => cceClusterId(cluster) === cceSelectedClusterId.value)
+    ) {
+      cceSelectedClusterId.value = "";
+      cceNodePools.value = [];
+      cceAccessEips.value = [];
+      cceSelectedAccessEipId.value = "";
+    } else if (cceSelectedClusterId.value) {
+      syncCceSelectedAccessEip();
+    }
+    if (shouldLog) {
+      addLog(
+        "app",
+        "info",
+        `Loaded ${cceClusters.value.length} CCE cluster(s) for region ${region.value}.`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to load CCE clusters: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceLoadingClusters.value = false;
+  }
+}
+
+async function selectCceCluster(clusterId: string) {
+  const normalizedClusterId = clusterId.trim();
+  if (!normalizedClusterId || cceSelectedClusterId.value === normalizedClusterId) {
+    return;
+  }
+  cceSelectedClusterId.value = normalizedClusterId;
+  cceNodePools.value = [];
+  cceAccessEips.value = [];
+  cceSelectedAccessEipId.value = "";
+  await Promise.all([loadCceNodePools({ log: false }), loadCceAccessEips({ log: false })]);
+}
+
+async function loadCceNodePools(options: { log?: boolean } = {}) {
+  const clusterId = cceSelectedClusterId.value.trim();
+  if (!clusterId) {
+    cceNodePools.value = [];
+    return;
+  }
+  const shouldLog = options.log ?? true;
+  cceLoadingNodePools.value = true;
+  cceErrorMsg.value = "";
+  if (shouldLog) {
+    addLog("app", "info", `Listing CCE node pools for cluster ${clusterId}.`);
+  }
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        clusterId,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const response = await invoke<CceNodePoolListResponse>("list_cce_node_pools", args);
+    cceNodePools.value = [...(response.items ?? [])].sort((left, right) =>
+      cceNodePoolName(left).localeCompare(cceNodePoolName(right))
+    );
+    if (shouldLog) {
+      addLog(
+        "app",
+        "info",
+        `Loaded ${cceNodePools.value.length} CCE node pool(s) for cluster ${clusterId}.`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to load CCE node pools: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceLoadingNodePools.value = false;
+  }
+}
+
+async function loadCceJob(jobIdInput?: string, options: { log?: boolean } = {}) {
+  const targetJobId = (jobIdInput ?? cceLastJobId.value).trim();
+  if (!targetJobId) {
+    return;
+  }
+  const shouldLog = options.log ?? true;
+  cceLoadingJob.value = true;
+  cceErrorMsg.value = "";
+  if (shouldLog) {
+    addLog("app", "info", `Querying CCE job ${targetJobId} in ${region.value}.`);
+  }
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        jobId: targetJobId,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    cceJobResult.value = await invoke<CceOperationResult>("get_cce_job", args);
+    if (shouldLog) {
+      addLog(
+        "app",
+        "info",
+        `CCE job ${targetJobId}: ${cceResultSummary(cceJobResult.value)}`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to query CCE job ${targetJobId}: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceLoadingJob.value = false;
+  }
+}
+
+async function loadCceNatGateways(options: { log?: boolean } = {}) {
+  const vpcId = cceClusterVpcId.value.trim();
+  const subnetId = cceClusterSubnetId.value.trim();
+  if (!vpcId || !subnetId) {
+    cceNatGateways.value = [];
+    return;
+  }
+
+  const shouldLog = options.log ?? true;
+  cceLoadingNatGateways.value = true;
+  if (shouldLog) {
+    addLog(
+      "app",
+      "info",
+      `Listing NAT gateways for CCE network vpc=${vpcId} subnet=${subnetId}.`
+    );
+  }
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        vpcId,
+        subnetId,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const response = await invoke<CceNatGatewayListResponse>("list_cce_nat_gateways", args);
+    cceNatGateways.value = [...(response.nat_gateways ?? [])].sort((left, right) =>
+      cceNatGatewayNameValue(left).localeCompare(cceNatGatewayNameValue(right))
+    );
+    if (shouldLog) {
+      addLog(
+        "app",
+        "info",
+        `Loaded ${cceNatGateways.value.length} NAT gateway(s) for selected CCE network.`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to load CCE NAT gateways: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceLoadingNatGateways.value = false;
+  }
+}
+
+async function loadCceAccessEips(options: { log?: boolean } = {}) {
+  const clusterId = cceSelectedClusterId.value.trim();
+  if (!clusterId) {
+    cceAccessEips.value = [];
+    cceSelectedAccessEipId.value = "";
+    return;
+  }
+
+  const shouldLog = options.log ?? true;
+  cceLoadingAccessEips.value = true;
+  if (shouldLog) {
+    addLog("app", "info", `Listing EIPs for CCE cluster access in ${region.value}.`);
+  }
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      region: region.value,
+      params: {
+        limit: 1000,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const response = await invoke<EipListResponse>("list_eips", args);
+    cceAccessEips.value = [...(response.publicips ?? [])]
+      .filter((item) => !!cceEipId(item))
+      .sort((left, right) => cceEipAddress(left).localeCompare(cceEipAddress(right)));
+    syncCceSelectedAccessEip();
+    if (shouldLog) {
+      addLog("app", "info", `Loaded ${cceAccessEips.value.length} EIP record(s) for CCE access.`);
+    }
+  } catch (err) {
+    const message = `Failed to load CCE access EIPs: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceLoadingAccessEips.value = false;
+  }
+}
+
+async function bindCceClusterApiEip() {
+  const clusterId = cceSelectedClusterId.value.trim();
+  if (!clusterId) {
+    cceErrorMsg.value = "Select a CCE cluster before binding an API EIP.";
+    return;
+  }
+  const selectedId = cceSelectedAccessEipId.value.trim();
+  const selected = cceAccessEips.value.find((item) => cceEipId(item) === selectedId);
+  const eipAddress = selected ? cceEipAddress(selected) : "";
+  if (!eipAddress) {
+    cceErrorMsg.value = "Select a valid EIP with a public address.";
+    return;
+  }
+
+  cceBindingAccessEip.value = true;
+  cceErrorMsg.value = "";
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        clusterId,
+        eipAddress,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const resultValue = await invoke<CceOperationResult>("bind_cce_cluster_api_eip", args);
+    cceLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Bind CCE API EIP ${eipAddress} to cluster ${clusterId}: ${cceResultSummary(resultValue)}`
+    );
+
+    const payload = safeJsonParse(resultValue.body);
+    const jobId = extractCceJobId(payload);
+    if (jobId) {
+      cceLastJobId.value = jobId;
+      await loadCceJob(jobId, { log: false });
+    }
+    if (success) {
+      await Promise.all([loadCceClusters({ log: false }), loadCceAccessEips({ log: false })]);
+      await sendUserNotification(
+        "CCE API EIP bind submitted",
+        `Cluster API endpoint is updating to ${eipAddress}.`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to bind CCE API EIP: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceBindingAccessEip.value = false;
+  }
+}
+
+async function downloadCceKubeconfig() {
+  const clusterId = cceSelectedClusterId.value.trim();
+  if (!clusterId) {
+    cceErrorMsg.value = "Select a CCE cluster before requesting kubeconfig.";
+    return;
+  }
+
+  cceDownloadingKubeconfig.value = true;
+  cceErrorMsg.value = "";
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        clusterId,
+        context: "external",
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const resultValue = await invoke<CceKubeconfigResult>("get_cce_cluster_kubeconfig", args);
+    cceLastResult.value = {
+      status: resultValue.status,
+      status_code: resultValue.status_code,
+      body: resultValue.body,
+    };
+
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    if (!success) {
+      const message = `Failed to request CCE kubeconfig: ${resultValue.status_code} ${resultValue.status}`;
+      cceErrorMsg.value = message;
+      addLog("app", "error", message);
+      return;
+    }
+
+    const kubeconfig = cceText(resultValue.kubeconfig);
+    if (!kubeconfig) {
+      const message =
+        "CCE kubeconfig response did not include a kubeconfig payload. Verify external access is enabled.";
+      cceErrorMsg.value = message;
+      addLog("app", "warn", message);
+      return;
+    }
+
+    const blob = new Blob([kubeconfig], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = cceKubeconfigFileName();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+
+    addLog("app", "info", `Downloaded CCE kubeconfig for cluster ${clusterId}.`);
+    setQuickCopyFeedback(`Download started: ${cceKubeconfigFileName()}.`);
+  } catch (err) {
+    const message = `Failed to download CCE kubeconfig: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceDownloadingKubeconfig.value = false;
+  }
+}
+
+async function createCceNatGateway() {
+  const name = cceNatGatewayName.value.trim();
+  const vpcId = cceClusterVpcId.value.trim();
+  const subnetId = cceClusterSubnetId.value.trim();
+  if (!name) {
+    cceErrorMsg.value = "NAT gateway name is required.";
+    return;
+  }
+  if (!vpcId || !subnetId) {
+    cceErrorMsg.value = "Select both CCE VPC and subnet before creating a NAT gateway.";
+    return;
+  }
+  if (cceNatGateways.value.length > 0) {
+    cceErrorMsg.value = "A NAT gateway already exists for this selected CCE network.";
+    return;
+  }
+
+  cceCreatingNatGateway.value = true;
+  cceErrorMsg.value = "";
+  cceLastResult.value = null;
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        name,
+        vpcId,
+        subnetId,
+        description: cceNatGatewayDescription.value.trim() || null,
+        spec: cceNatGatewaySpec.value,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const resultValue = await invoke<CceOperationResult>("create_cce_nat_gateway", args);
+    cceLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Create CCE NAT gateway ${name} (auto EIP + SNAT): ${cceResultSummary(resultValue)}`
+    );
+    if (success) {
+      await Promise.all([loadCceNatGateways({ log: false }), loadCceAccessEips({ log: false })]);
+      await sendUserNotification(
+        "CCE NAT bootstrap accepted",
+        `${name} request submitted with EIP + SNAT setup in ${region.value}.`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to create CCE NAT gateway: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceCreatingNatGateway.value = false;
+  }
+}
+
+async function deleteCceNatGateway(gateway: CceNatGateway) {
+  const natGatewayId = cceNatGatewayId(gateway);
+  if (!natGatewayId) {
+    return;
+  }
+  const gatewayName = cceNatGatewayNameValue(gateway);
+  const confirmed = await showConfirmDialog(
+    `Delete NAT gateway "${gatewayName}" (${natGatewayId})? This can interrupt egress routing.`,
+    {
+      title: "Delete CCE NAT Gateway",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    }
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  cceDeletingNatGatewayId.value = natGatewayId;
+  cceErrorMsg.value = "";
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        natGatewayId,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const resultValue = await invoke<CceOperationResult>("delete_cce_nat_gateway", args);
+    cceLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Delete CCE NAT gateway ${gatewayName} (${natGatewayId}): ${cceResultSummary(resultValue)}`
+    );
+    if (success) {
+      await loadCceNatGateways({ log: false });
+    }
+  } catch (err) {
+    const message = `Failed to delete CCE NAT gateway: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceDeletingNatGatewayId.value = null;
+  }
+}
+
+async function createCceCluster() {
+  const clusterName = cceClusterName.value.trim();
+  if (!clusterName) {
+    cceErrorMsg.value = "CCE cluster name is required.";
+    return;
+  }
+  if (!cceClusterVpcId.value || !cceClusterSubnetId.value) {
+    cceErrorMsg.value = "Select both VPC and subnet before creating a cluster.";
+    return;
+  }
+
+  cceCreatingCluster.value = true;
+  cceErrorMsg.value = "";
+  cceLastResult.value = null;
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        name: clusterName,
+        flavor: cceClusterFlavor.value.trim(),
+        version: cceClusterVersion.value.trim(),
+        vpcId: cceClusterVpcId.value,
+        subnetId: cceClusterSubnetId.value,
+        description: cceClusterDescription.value.trim() || null,
+        clusterType: cceClusterType.value,
+        containerNetworkMode: cceClusterContainerNetworkMode.value,
+        containerNetworkCidr: cceClusterContainerNetworkCidr.value.trim(),
+        kubernetesSvcIpRange: cceClusterServiceCidr.value.trim(),
+        authenticationMode: cceClusterAuthenticationMode.value,
+        clusterTagEnv: cceClusterTagEnv.value.trim() || null,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    const resultValue = await invoke<CceOperationResult>("create_cce_cluster", args);
+    cceLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Create CCE cluster ${clusterName}: ${cceResultSummary(resultValue)}`
+    );
+
+    const payload = safeJsonParse(resultValue.body);
+    const jobId = extractCceJobId(payload);
+    if (jobId) {
+      cceLastJobId.value = jobId;
+      await loadCceJob(jobId, { log: false });
+    }
+
+    if (success) {
+      await loadCceClusters({ log: false });
+      const createdClusterId = extractCceClusterId(payload);
+      const matchedCluster =
+        cceClusters.value.find((cluster) => cceClusterId(cluster) === createdClusterId) ??
+        cceClusters.value.find((cluster) => cceClusterDisplayName(cluster) === clusterName);
+      const targetClusterId = matchedCluster ? cceClusterId(matchedCluster) : "";
+      if (targetClusterId) {
+        await selectCceCluster(targetClusterId);
+      }
+      await sendUserNotification(
+        "CCE cluster create accepted",
+        `${clusterName} request submitted in ${region.value}.`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to create CCE cluster: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceCreatingCluster.value = false;
+  }
+}
+
+async function deleteCceCluster(cluster: CceCluster) {
+  const clusterId = cceClusterId(cluster);
+  if (!clusterId) {
+    return;
+  }
+  const clusterName = cceClusterDisplayName(cluster);
+  const confirmed = await showConfirmDialog(
+    `Delete CCE cluster "${clusterName}" (${clusterId})? This removes cluster resources managed by CCE.`,
+    {
+      title: "Delete CCE Cluster",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    }
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  cceDeletingClusterId.value = clusterId;
+  cceErrorMsg.value = "";
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        clusterId,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const resultValue = await invoke<CceOperationResult>("delete_cce_cluster", args);
+    cceLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Delete CCE cluster ${clusterName} (${clusterId}): ${cceResultSummary(resultValue)}`
+    );
+
+    const payload = safeJsonParse(resultValue.body);
+    const jobId = extractCceJobId(payload);
+    if (jobId) {
+      cceLastJobId.value = jobId;
+      await loadCceJob(jobId, { log: false });
+    }
+
+    if (success) {
+      await loadCceClusters({ log: false });
+      if (cceSelectedClusterId.value === clusterId) {
+        cceSelectedClusterId.value = "";
+        cceNodePools.value = [];
+      }
+    }
+  } catch (err) {
+    const message = `Failed to delete CCE cluster: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceDeletingClusterId.value = null;
+  }
+}
+
+function obsDownloadFileName(objectKey: string): string {
+  const key = normalizeObsObjectKey(objectKey);
+  if (!key) {
+    return "obs-object";
+  }
+  const segments = key.split("/");
+  const baseName = segments[segments.length - 1]?.trim() || key;
+  const sanitized = baseName.replace(/[\\/:*?"<>|]/g, "_");
+  return sanitized || "obs-object";
+}
+
+function obsResultSummary(resultValue: ObsOperationResult): string {
+  return `${resultValue.status_code} ${resultValue.status}`;
+}
+
+function onObsUploadFileChange(inputValue: Event | File | null) {
+  let file: File | null = null;
+  if (inputValue instanceof File || inputValue === null) {
+    file = inputValue;
+  } else {
+    const input = inputValue.target as HTMLInputElement | null;
+    file = input?.files?.[0] ?? null;
+  }
+  obsUploadFile.value = file;
+  if (file && !obsUploadObjectKey.value.trim()) {
+    obsUploadObjectKey.value = file.name;
+  }
+}
+
+function clearObsUploadSelection() {
+  obsUploadFile.value = null;
+  obsUploadObjectKey.value = "";
+  obsUploadContentType.value = "";
+}
+
+function resetObsBucketTotals() {
+  obsBucketTotalSizeBytes.value = null;
+  obsBucketTotalObjectCount.value = null;
+  obsBucketTotalsError.value = null;
+}
+
+function obsRegionForBucket(bucketName: string): string {
+  const normalized = bucketName.trim();
+  if (!normalized) {
+    return region.value;
+  }
+  const bucketRegion = obsBuckets.value
+    .find((bucket) => bucket.name === normalized)
+    ?.location?.trim();
+  return bucketRegion || region.value;
+}
+
+async function encodeFileToBase64(
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => {
+      reject(new Error("Failed to read file for upload."));
+    };
+    reader.onprogress = (event) => {
+      if (!onProgress || !event.lengthComputable || event.total <= 0) {
+        return;
+      }
+      onProgress(Math.min(100, Math.max(0, Math.round((event.loaded / event.total) * 100))));
+    };
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const marker = "base64,";
+      const markerIndex = result.indexOf(marker);
+      if (markerIndex < 0) {
+        reject(new Error("Could not encode file to base64."));
+        return;
+      }
+      resolve(result.slice(markerIndex + marker.length));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function loadObsBuckets(options: { log?: boolean } = {}) {
+  const shouldLog = options.log ?? true;
+  obsLoadingBuckets.value = true;
+  obsErrorMsg.value = "";
+  if (shouldLog) {
+    addLog("app", "info", `Listing OBS buckets for region ${region.value}.`);
+  }
+
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = { region: region.value };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const data = await invoke<ObsListBucketsResponse>("list_obs_buckets", args);
+    obsBuckets.value = (data.buckets ?? []).sort((a, b) => a.name.localeCompare(b.name));
+    if (
+      obsSelectedBucket.value &&
+      !obsBuckets.value.some((bucket) => bucket.name === obsSelectedBucket.value)
+    ) {
+      obsObjectsLoadToken += 1;
+      obsBucketTotalsLoadToken += 1;
+      obsSelectedBucket.value = "";
+      obsObjects.value = [];
+      obsObjectMarker.value = "";
+      obsLoadingObjects.value = false;
+      obsLoadingBucketTotals.value = false;
+      resetObsBucketTotals();
+    }
+    if (shouldLog) {
+      addLog(
+        "app",
+        "info",
+        `Loaded ${obsBuckets.value.length} OBS buckets for region ${region.value}.`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to load OBS buckets: ${errorToString(err)}`;
+    obsErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    obsLoadingBuckets.value = false;
+  }
+}
+
+async function selectObsBucket(bucketName: string) {
+  if (!bucketName || obsSelectedBucket.value === bucketName) {
+    return;
+  }
+  obsSelectedBucket.value = bucketName;
+  obsObjectMarker.value = "";
+  obsObjects.value = [];
+  await Promise.all([loadObsObjects(), loadObsBucketTotals()]);
+}
+
+async function loadObsObjects(options: { log?: boolean } = {}) {
+  if (!obsSelectedBucket.value) {
+    obsObjects.value = [];
+    obsObjectMarker.value = "";
+    resetObsBucketTotals();
+    return;
+  }
+  const requestedBucket = obsSelectedBucket.value;
+  const bucketRegion = obsRegionForBucket(requestedBucket);
+  const token = ++obsObjectsLoadToken;
+  const shouldLog = options.log ?? true;
+  obsLoadingObjects.value = true;
+  obsErrorMsg.value = "";
+  obsObjects.value = [];
+  if (shouldLog) {
+    addLog(
+      "app",
+      "info",
+      `Listing OBS objects for bucket ${requestedBucket} in ${bucketRegion}.`
+    );
+  }
+
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: bucketRegion,
+        bucketName: requestedBucket,
+        prefix: obsObjectPrefix.value.trim() || null,
+        marker: obsObjectMarker.value.trim() || null,
+        maxKeys: obsObjectMaxKeys.value,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    const response = await invoke<ObsListObjectsResponse>("list_obs_objects", args);
+    if (token !== obsObjectsLoadToken || requestedBucket !== obsSelectedBucket.value) {
+      return;
+    }
+    obsObjects.value = response.objects ?? [];
+    if (response.next_marker) {
+      obsObjectMarker.value = response.next_marker;
+    } else if (!(response.is_truncated ?? false)) {
+      obsObjectMarker.value = "";
+    }
+    if (shouldLog) {
+      addLog(
+        "app",
+        "info",
+        `Loaded ${obsObjects.value.length} objects from bucket ${requestedBucket} in ${bucketRegion}.`
+      );
+    }
+  } catch (err) {
+    if (token !== obsObjectsLoadToken || requestedBucket !== obsSelectedBucket.value) {
+      return;
+    }
+    obsObjects.value = [];
+    obsObjectMarker.value = "";
+    const message = `Failed to load OBS objects: ${errorToString(err)}`;
+    obsErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    if (token === obsObjectsLoadToken) {
+      obsLoadingObjects.value = false;
+    }
+  }
+}
+
+async function loadObsBucketTotals(options: { log?: boolean } = {}) {
+  if (!obsSelectedBucket.value) {
+    resetObsBucketTotals();
+    return;
+  }
+
+  const requestedBucket = obsSelectedBucket.value;
+  const bucketRegion = obsRegionForBucket(requestedBucket);
+  const token = ++obsBucketTotalsLoadToken;
+  const shouldLog = options.log ?? false;
+  obsLoadingBucketTotals.value = true;
+  obsBucketTotalsError.value = null;
+  obsBucketTotalSizeBytes.value = null;
+  obsBucketTotalObjectCount.value = null;
+
+  if (shouldLog) {
+    addLog(
+      "app",
+      "info",
+      `Calculating OBS bucket usage for ${requestedBucket} in ${bucketRegion}.`
+    );
+  }
+
+  let marker: string | null = null;
+  let totalSizeBytes = 0;
+  let totalObjectCount = 0;
+  let pageCount = 0;
+  const seenMarkers = new Set<string>();
+
+  try {
+    const credentials = buildCredentialsPayload();
+    while (true) {
+      if (token !== obsBucketTotalsLoadToken || requestedBucket !== obsSelectedBucket.value) {
+        return;
+      }
+
+      pageCount += 1;
+      if (pageCount > OBS_TOTALS_MAX_PAGES) {
+        throw new Error(
+          `Stopped usage scan after ${OBS_TOTALS_MAX_PAGES} pages to avoid an infinite loop.`
+        );
+      }
+
+      const args: Record<string, unknown> = {
+        params: {
+          region: bucketRegion,
+          bucketName: requestedBucket,
+          maxKeys: OBS_MAX_KEYS_MAX,
+          marker,
+          prefix: null,
+        },
+      };
+      if (credentials) {
+        args.credentials = credentials;
+      }
+
+      const response = await invoke<ObsListObjectsResponse>("list_obs_objects", args);
+      if (token !== obsBucketTotalsLoadToken || requestedBucket !== obsSelectedBucket.value) {
+        return;
+      }
+
+      const pageObjects = response.objects ?? [];
+      totalObjectCount += pageObjects.length;
+      for (const object of pageObjects) {
+        const objectSize = Number(object.size ?? 0);
+        if (Number.isFinite(objectSize) && objectSize > 0) {
+          totalSizeBytes += objectSize;
+        }
+      }
+
+      const nextMarker = response.next_marker?.trim() ?? "";
+      if (!(response.is_truncated ?? false) || !nextMarker) {
+        break;
+      }
+      if (seenMarkers.has(nextMarker)) {
+        throw new Error(`OBS pagination repeated marker "${nextMarker}".`);
+      }
+      seenMarkers.add(nextMarker);
+      marker = nextMarker;
+    }
+
+    obsBucketTotalSizeBytes.value = totalSizeBytes;
+    obsBucketTotalObjectCount.value = totalObjectCount;
+    if (shouldLog) {
+      addLog(
+        "app",
+        "info",
+        `OBS usage for ${requestedBucket}: ${formatObsObjectSize(totalSizeBytes)} across ${totalObjectCount} object(s).`
+      );
+    }
+  } catch (err) {
+    if (token !== obsBucketTotalsLoadToken || requestedBucket !== obsSelectedBucket.value) {
+      return;
+    }
+    obsBucketTotalSizeBytes.value = null;
+    obsBucketTotalObjectCount.value = null;
+    const message = `Failed to calculate OBS bucket usage: ${errorToString(err)}`;
+    obsBucketTotalsError.value = message;
+    addLog("app", "error", message);
+  } finally {
+    if (token === obsBucketTotalsLoadToken) {
+      obsLoadingBucketTotals.value = false;
+    }
+  }
+}
+
+async function reloadObsObjectsAndTotals() {
+  await Promise.all([loadObsObjects(), loadObsBucketTotals()]);
+}
+
+async function createObsBucket() {
+  const bucketName = normalizeObsBucketName(obsBucketName.value);
+  const bucketError = validateObsBucketName(bucketName);
+  if (bucketError) {
+    obsErrorMsg.value = bucketError;
+    addLog("app", "warn", bucketError);
+    return;
+  }
+
+  obsCreatingBucket.value = true;
+  obsErrorMsg.value = "";
+  obsLastResult.value = null;
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        bucketName,
+        defaultStorageClass: obsDefaultStorageClass.value,
+        acl: obsBucketAcl.value,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    const resultValue = await invoke<ObsOperationResult>("create_obs_bucket", args);
+    obsLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Create OBS bucket ${bucketName}: ${obsResultSummary(resultValue)}`
+    );
+    if (success) {
+      obsBucketName.value = "";
+      await loadObsBuckets({ log: false });
+      await selectObsBucket(bucketName);
+      await sendUserNotification(
+        "OBS bucket created",
+        `${bucketName} created in ${region.value}.`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to create OBS bucket: ${errorToString(err)}`;
+    obsErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    obsCreatingBucket.value = false;
+  }
+}
+
+async function deleteObsBucket(bucket: ObsBucket) {
+  const bucketName = bucket.name;
+  if (!bucketName) {
+    return;
+  }
+  const bucketRegion = bucket.location?.trim() || obsRegionForBucket(bucketName);
+  const confirmed = await showConfirmDialog(
+    `Delete bucket "${bucketName}"? The bucket must be empty before OBS accepts deletion.`,
+    {
+      title: "Delete OBS Bucket",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    }
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  obsDeletingBucket.value = bucketName;
+  obsErrorMsg.value = "";
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: { region: bucketRegion, bucketName },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    const resultValue = await invoke<ObsOperationResult>("delete_obs_bucket", args);
+    obsLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Delete OBS bucket ${bucketName} (${bucketRegion}): ${obsResultSummary(resultValue)}`
+    );
+    if (success) {
+      await loadObsBuckets({ log: false });
+      if (obsSelectedBucket.value === bucketName) {
+        obsObjectsLoadToken += 1;
+        obsBucketTotalsLoadToken += 1;
+        obsSelectedBucket.value = "";
+        obsObjects.value = [];
+        obsObjectMarker.value = "";
+        obsLoadingObjects.value = false;
+        obsLoadingBucketTotals.value = false;
+        resetObsBucketTotals();
+      }
+    }
+  } catch (err) {
+    const message = `Failed to delete OBS bucket: ${errorToString(err)}`;
+    obsErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    obsDeletingBucket.value = null;
+  }
+}
+
+async function uploadObsObject() {
+  const bucketName = obsSelectedBucket.value;
+  const bucketRegion = obsRegionForBucket(bucketName);
+  const file = obsUploadFile.value;
+  const objectKey = normalizeObsObjectKey(obsUploadObjectKey.value);
+  if (!bucketName) {
+    obsErrorMsg.value = "Select a bucket before uploading.";
+    return;
+  }
+  if (!file) {
+    obsErrorMsg.value = "Select a file to upload.";
+    return;
+  }
+  if (!objectKey) {
+    obsErrorMsg.value = "Object key is required.";
+    return;
+  }
+  if (file.size > OBS_PUT_OBJECT_MAX_BYTES) {
+    obsErrorMsg.value =
+      `File is too large for OBS single PUT upload (${formatObsObjectSize(file.size)}). ` +
+      `Maximum supported by PutObject is ${obsSinglePutLimitLabel.value}.`;
+    return;
+  }
+
+  obsUploadingObject.value = true;
+  obsUploadProgress.value = 0;
+  obsErrorMsg.value = "";
+  try {
+    const contentBase64 = await encodeFileToBase64(file, (percent) => {
+      const mapped = Math.round(percent * 0.85);
+      obsUploadProgress.value = Math.min(85, Math.max(obsUploadProgress.value ?? 0, mapped));
+    });
+    obsUploadProgress.value = 92;
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: bucketRegion,
+        bucketName,
+        objectKey,
+        contentBase64,
+        contentType: obsResolvedUploadContentType.value,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    obsUploadProgress.value = 96;
+    const resultValue = await invoke<ObsOperationResult>("put_obs_object", args);
+    obsLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Upload OBS object ${objectKey}: ${obsResultSummary(resultValue)}`
+    );
+    if (success) {
+      obsUploadProgress.value = 100;
+      clearObsUploadSelection();
+      await Promise.all([loadObsObjects({ log: false }), loadObsBucketTotals({ log: false })]);
+      window.setTimeout(() => {
+        obsUploadProgress.value = null;
+      }, 1200);
+    } else {
+      obsUploadProgress.value = null;
+    }
+  } catch (err) {
+    const message = `Failed to upload OBS object: ${errorToString(err)}`;
+    obsErrorMsg.value = message;
+    addLog("app", "error", message);
+    obsUploadProgress.value = null;
+  } finally {
+    obsUploadingObject.value = false;
+  }
+}
+
+async function downloadObsObject(objectKeyValue: string) {
+  const bucketName = obsSelectedBucket.value;
+  const bucketRegion = obsRegionForBucket(bucketName);
+  const objectKey = normalizeObsObjectKey(objectKeyValue);
+  if (!bucketName || !objectKey) {
+    return;
+  }
+
+  obsDownloadingObject.value = objectKey;
+  obsDownloadProgress.value = 5;
+  obsErrorMsg.value = "";
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: bucketRegion,
+        bucketName,
+        objectKey,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    obsDownloadProgress.value = 65;
+    const response = await invoke<ObsGetObjectResult>("get_obs_object", args);
+    const success = response.status_code >= 200 && response.status_code < 300;
+    if (!success || response.content_base64 == null) {
+      const summary = response.body?.trim();
+      const message = summary
+        ? `Failed to download OBS object: ${response.status_code} ${response.status} (${summary})`
+        : `Failed to download OBS object: ${response.status_code} ${response.status}`;
+      obsErrorMsg.value = message;
+      addLog("app", "error", message);
+      obsDownloadProgress.value = null;
+      return;
+    }
+
+    obsDownloadProgress.value = 85;
+    const bytes = base64ToBytes(response.content_base64);
+    const blob = new Blob([bytes], {
+      type: response.content_type?.trim() || "application/octet-stream",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = obsDownloadFileName(objectKey);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    obsDownloadProgress.value = 100;
+    window.setTimeout(() => {
+      obsDownloadProgress.value = null;
+    }, 1200);
+
+    addLog(
+      "app",
+      "info",
+      `Downloaded OBS object ${objectKey} from bucket ${bucketName}.`
+    );
+    setQuickCopyFeedback(`Download started: ${obsDownloadFileName(objectKey)}.`);
+  } catch (err) {
+    const message = `Failed to download OBS object: ${errorToString(err)}`;
+    obsErrorMsg.value = message;
+    addLog("app", "error", message);
+    obsDownloadProgress.value = null;
+  } finally {
+    obsDownloadingObject.value = null;
+  }
+}
+
+async function deleteObsObject(objectKeyValue: string) {
+  const bucketName = obsSelectedBucket.value;
+  const bucketRegion = obsRegionForBucket(bucketName);
+  const objectKey = normalizeObsObjectKey(objectKeyValue);
+  if (!bucketName || !objectKey) {
+    return;
+  }
+  const confirmed = await showConfirmDialog(`Delete object "${objectKey}" from ${bucketName}?`, {
+    title: "Delete OBS Object",
+    kind: "warning",
+    okLabel: "Delete",
+    cancelLabel: "Cancel",
+  });
+  if (!confirmed) {
+    return;
+  }
+
+  obsDeletingObject.value = objectKey;
+  obsErrorMsg.value = "";
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: bucketRegion,
+        bucketName,
+        objectKey,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    const resultValue = await invoke<ObsOperationResult>("delete_obs_object", args);
+    obsLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Delete OBS object ${objectKey}: ${obsResultSummary(resultValue)}`
+    );
+    if (success) {
+      await Promise.all([loadObsObjects({ log: false }), loadObsBucketTotals({ log: false })]);
+    }
+  } catch (err) {
+    const message = `Failed to delete OBS object: ${errorToString(err)}`;
+    obsErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    obsDeletingObject.value = null;
+  }
+}
+
+async function copyObsBucketName(bucketName: string) {
+  const copied = await copyTextToClipboard(bucketName, "OBS bucket name");
+  setQuickCopyFeedback(copied ? "Bucket name copied." : "Bucket name copy failed.");
+}
+
+async function copyObsObjectKey(objectKey: string) {
+  const copied = await copyTextToClipboard(objectKey, "OBS object key");
+  setQuickCopyFeedback(copied ? "Object key copied." : "Object key copy failed.");
 }
 
 function isTauriRuntime(): boolean {
@@ -1194,6 +2972,10 @@ function errorToString(err: unknown): string {
     return err.message;
   }
   return String(err);
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -1240,19 +3022,64 @@ function startupTaskConfigForServer(serverId: string): StartupTaskConfig | null 
   return startupTaskConfigsByServer.value[serverId] ?? null;
 }
 
+function startupTaskRdpUser(config: StartupTaskConfig | null | undefined): string | null {
+  if (!config?.setupGuiRdp) {
+    return null;
+  }
+  return normalizeRdpUsername(config.rdpUsername);
+}
+
+function startupTaskRdpUserForServer(serverId: string): string | null {
+  return startupTaskRdpUser(startupTaskConfigForServer(serverId));
+}
+
 function isSshAuthFailureMessage(message: string): boolean {
   return /authentication (failed|rejected)|permission denied|invalid credentials|password/i.test(
     message
   );
 }
 
-function buildStartupTaskCommand(config: StartupTaskConfig): string {
-  const sections: string[] = ["set -eu"];
+function buildStartupTaskCommand(config: StartupTaskConfig, rdpPassword: string): string {
+  const sections: string[] = [
+    "set -eu",
+    `
+hc_forge_progress() {
+  __raw="$1"
+  shift || true
+  __msg="$*"
+  __base="\${HC_FORGE_PROGRESS_BASE:-0}"
+  __span="\${HC_FORGE_PROGRESS_SPAN:-100}"
+  __scaled=$(( __base + (__raw * __span) / 100 ))
+  if [ "$__scaled" -lt 0 ]; then __scaled=0; fi
+  if [ "$__scaled" -gt 100 ]; then __scaled=100; fi
+  echo "[hc-forge] [progress] \${__scaled} \${__msg}"
+}
+`.trim(),
+  ];
+
+  const rdpUser = startupTaskRdpUser(config) ?? generateRdpUsername();
+
   if (config.autoUpdate) {
+    if (config.setupGuiRdp) {
+      sections.push("export HC_FORGE_PROGRESS_BASE=0\nexport HC_FORGE_PROGRESS_SPAN=60");
+    } else {
+      sections.push("export HC_FORGE_PROGRESS_BASE=0\nexport HC_FORGE_PROGRESS_SPAN=100");
+    }
     sections.push(AUTO_VM_UPDATE_COMMAND);
   }
   if (config.setupGuiRdp) {
-    sections.push(SETUP_GUI_RDP_COMMAND);
+    if (config.autoUpdate) {
+      sections.push("export HC_FORGE_PROGRESS_BASE=60\nexport HC_FORGE_PROGRESS_SPAN=40");
+    } else {
+      sections.push("export HC_FORGE_PROGRESS_BASE=0\nexport HC_FORGE_PROGRESS_SPAN=100");
+    }
+    sections.push(
+      [
+        `export HC_FORGE_RDP_USER=${shellSingleQuote(rdpUser)}`,
+        `export HC_FORGE_RDP_PASSWORD=${shellSingleQuote(rdpPassword)}`,
+        SETUP_GUI_RDP_COMMAND,
+      ].join("\n")
+    );
   }
   sections.push('echo "[hc-forge] Startup task pipeline completed."');
   return sections.join("\n\n");
@@ -1422,6 +3249,9 @@ function decodeStartupTaskConfig(value: unknown): StartupTaskConfig | null {
   if (!autoUpdate && !setupGuiRdp) {
     return null;
   }
+  const parsedRdpUser = normalizeRdpUsername(
+    typeof raw.rdpUsername === "string" ? raw.rdpUsername : null
+  );
   const statusRaw =
     raw.lastStatus === "done" || raw.lastStatus === "failed" ? raw.lastStatus : "pending";
 
@@ -1429,6 +3259,7 @@ function decodeStartupTaskConfig(value: unknown): StartupTaskConfig | null {
     region: regionValue,
     autoUpdate,
     setupGuiRdp,
+    rdpUsername: setupGuiRdp ? parsedRdpUser : null,
     lastStatus: statusRaw,
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
@@ -1725,17 +3556,22 @@ function trackAutoUpdateLineForSession(sessionId: string, kind: string, text: st
     if (!line) {
       continue;
     }
-    const progressMarker = line.match(/\[hc-forge\]\s*\[progress\]\s*(\d{1,3})/i);
-    const percentMatch = progressMarker ?? line.match(/(\d{1,3})%/);
+    const progressMarker = line.match(/\[hc-forge\]\s*\[progress\]\s*(\d{1,3})(?:\s+(.+))?/i);
+    const isForgeLine = /\[hc-forge\]/i.test(line);
+    if (!isForgeLine) {
+      continue;
+    }
     const parsedPercent =
-      percentMatch && kind !== "stderr"
-        ? Math.min(100, Math.max(0, Number.parseInt(percentMatch[1], 10)))
+      progressMarker && kind !== "stderr"
+        ? Math.min(100, Math.max(0, Number.parseInt(progressMarker[1], 10)))
         : null;
     const currentPercent = autoUpdateProgressByServer.value[serverId]?.percent;
     const nextPercent =
       parsedPercent == null ? null : Math.max(currentPercent ?? 0, parsedPercent);
+    const markerMessage = progressMarker?.[2]?.trim();
+    const displayLine = markerMessage || line;
     setAutoUpdateProgress(serverId, {
-      lastLine: line.slice(0, 220),
+      lastLine: displayLine.slice(0, 220),
       ...(nextPercent != null ? { percent: nextPercent } : {}),
     });
   }
@@ -1860,6 +3696,570 @@ function addSshTerminalEntry(
 
 function clearSshTerminal() {
   sshTerminalEntries.value = [];
+}
+
+function setSshUseFormPassword(value: boolean) {
+  sshUseFormPassword.value = value;
+}
+
+function setSshManualPassword(value: string) {
+  sshManualPassword.value = value;
+}
+
+function setSshCommandInput(value: string) {
+  sshCommandInput.value = value;
+}
+
+function clearPlatformMessages() {
+  platformError.value = null;
+  platformInfo.value = null;
+}
+
+function clearPlatformCollections() {
+  platformDockerImages.value = [];
+  platformDockerContainers.value = [];
+  platformMinikubeStatus.value = "";
+  platformMinikubeNodes.value = "";
+  platformMinikubePods.value = "";
+  platformNixVersion.value = "";
+  platformNixPackages.value = [];
+  platformNixStoreUsage.value = "";
+}
+
+function setActivePlatformServer(ecs: EcsServer) {
+  const nextServerId = ecs.id ?? null;
+  if (!nextServerId) {
+    return;
+  }
+  if (platformPanelServerId.value !== nextServerId) {
+    clearPlatformCollections();
+    clearPlatformMessages();
+  }
+  platformPanelServerId.value = nextServerId;
+  platformPanelOpen.value = true;
+}
+
+function closePlatformPanel() {
+  platformPanelOpen.value = false;
+  platformPanelServerId.value = null;
+  platformBusyServerId.value = null;
+  platformActionLabel.value = null;
+  clearPlatformMessages();
+}
+
+function isPlatformOpenForEcs(ecs: EcsServer): boolean {
+  const serverId = ecs.id ?? "";
+  if (!serverId) {
+    return false;
+  }
+  return platformPanelOpen.value && platformPanelServerId.value === serverId;
+}
+
+function platformButtonLabel(ecs: EcsServer): string {
+  const serverId = ecs.id ?? "";
+  if (serverId && platformBusyServerId.value === serverId) {
+    return platformActionLabel.value ?? "Working...";
+  }
+  return isPlatformOpenForEcs(ecs) ? "Close Ops" : "Platform Ops";
+}
+
+function setPlatformActiveTab(value: PlatformOpsTab) {
+  platformActiveTab.value = value;
+}
+
+function setPlatformDockerInstallEnabled(value: boolean) {
+  platformDockerInstallEnabled.value = value;
+}
+
+function setPlatformDockerfileContent(value: string) {
+  platformDockerfileContent.value = value;
+}
+
+function setPlatformMinikubeInstallEnabled(value: boolean) {
+  platformMinikubeInstallEnabled.value = value;
+}
+
+function setPlatformMinikubeEnsureDocker(value: boolean) {
+  platformMinikubeEnsureDocker.value = value;
+}
+
+function setPlatformMinikubeAutoStart(value: boolean) {
+  platformMinikubeAutoStart.value = value;
+}
+
+function setPlatformMinikubeProfile(value: string) {
+  platformMinikubeProfile.value = value;
+}
+
+function setPlatformMinikubeDriver(value: "docker" | "none") {
+  platformMinikubeDriver.value = value === "none" ? "none" : "docker";
+}
+
+function setPlatformMinikubeCpus(value: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    platformMinikubeCpus.value = 2;
+    return;
+  }
+  platformMinikubeCpus.value = Math.min(64, Math.max(1, Math.trunc(parsed)));
+}
+
+function setPlatformMinikubeMemoryMb(value: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    platformMinikubeMemoryMb.value = 4096;
+    return;
+  }
+  platformMinikubeMemoryMb.value = Math.min(262144, Math.max(1024, Math.trunc(parsed)));
+}
+
+function setPlatformMinikubeK8sVersion(value: string) {
+  platformMinikubeK8sVersion.value = value;
+}
+
+function setPlatformNixInstallEnabled(value: boolean) {
+  platformNixInstallEnabled.value = value;
+}
+
+function setPlatformNixEnableFlakes(value: boolean) {
+  platformNixEnableFlakes.value = value;
+}
+
+function setPlatformNixRunGarbageCollect(value: boolean) {
+  platformNixRunGarbageCollect.value = value;
+}
+
+function setPlatformNixPackagesInput(value: string) {
+  platformNixPackagesInput.value = value;
+}
+
+function platformErrorMessage(prefix: string, err: unknown): string {
+  return `${prefix}: ${errorToString(err)}`;
+}
+
+function setPlatformError(prefix: string, err: unknown) {
+  const message = platformErrorMessage(prefix, err);
+  platformError.value = message;
+  platformInfo.value = null;
+  addLog("app", "error", message);
+}
+
+function safePlatformProfile(): string {
+  const profile = platformMinikubeProfile.value.trim();
+  return profile || "hcforge";
+}
+
+function safePlatformCpus(): number {
+  return Math.min(64, Math.max(1, Math.trunc(platformMinikubeCpus.value || 2)));
+}
+
+function safePlatformMemoryMb(): number {
+  return Math.min(262144, Math.max(1024, Math.trunc(platformMinikubeMemoryMb.value || 4096)));
+}
+
+function formatPlatformOutput(stdout: string, stderr: string): string {
+  const out = stdout.trim();
+  if (out) {
+    return out;
+  }
+  const err = stderr.trim();
+  if (err) {
+    return err;
+  }
+  return "No output returned.";
+}
+
+async function runPlatformOneShot(
+  ecs: EcsServer,
+  command: string,
+  actionLabel: string
+): Promise<{ stdout: string; stderr: string; host: string; exitStatus: number }> {
+  const serverId = ecs.id ?? "";
+  const serverName = ecs.name ?? serverId;
+  if (!serverId) {
+    throw new Error("Missing ECS ID for platform action.");
+  }
+
+  const host = findSshHostForServer(ecs);
+  if (!host) {
+    throw new Error("No public EIP found for selected ECS.");
+  }
+
+  const password = resolveSshPasswordForServer(serverId);
+  if (!password) {
+    throw new Error("SSH password is required for this action.");
+  }
+
+  platformBusyServerId.value = serverId;
+  platformActionLabel.value = actionLabel;
+  platformError.value = null;
+
+  try {
+    const response = await invoke<SshExecOneShotResult>("ssh_exec_one_shot", {
+      params: {
+        sessionId: `platform-ops:${serverId}:${Date.now()}`,
+        host,
+        port: 22,
+        username: "root",
+        password,
+        command,
+      },
+    });
+
+    await persistServerPassword(serverId, password);
+
+    const exitStatus = response.exitStatus;
+    const stderr = sanitizeSshText(response.stderr).trim();
+    const stdout = sanitizeSshText(response.stdout).trim();
+    if (exitStatus == null) {
+      const summary = stderr || stdout || "missing remote exit status";
+      throw new Error(`Remote command did not report an exit status: ${summary}`);
+    }
+    if (exitStatus !== 0) {
+      const summary = stderr || stdout || `exit status ${exitStatus}`;
+      throw new Error(summary);
+    }
+
+    if (stderr) {
+      addLog(
+        "app",
+        "warn",
+        `${actionLabel} on ${serverName} produced warnings: ${stderr.slice(0, 220)}`
+      );
+    }
+    addLog("app", "info", `${actionLabel} completed on ${serverName} (${host}).`);
+    return { stdout, stderr, host, exitStatus };
+  } finally {
+    platformBusyServerId.value = null;
+    platformActionLabel.value = null;
+  }
+}
+
+async function togglePlatformForEcs(ecs: EcsServer) {
+  if (platformBusyServerId.value) {
+    return;
+  }
+  const serverId = ecs.id ?? "";
+  if (!serverId) {
+    return;
+  }
+  if (isPlatformOpenForEcs(ecs)) {
+    closePlatformPanel();
+    return;
+  }
+  if (sshPanelOpen.value) {
+    await closeSshPanel();
+  }
+  setActivePlatformServer(ecs);
+}
+
+async function refreshPlatformDockerImages(options: { log?: boolean } = {}) {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  const shouldLog = options.log ?? true;
+  try {
+    const { stdout } = await runPlatformOneShot(
+      server,
+      buildDockerImagesCommand(),
+      "Docker image listing"
+    );
+    platformDockerImages.value = parseDockerImages(stdout);
+    if (shouldLog) {
+      platformInfo.value = `Loaded ${platformDockerImages.value.length} Docker image(s).`;
+    }
+  } catch (err) {
+    if (!shouldLog) {
+      throw err;
+    }
+    setPlatformError("Failed to list Docker images", err);
+  }
+}
+
+async function refreshPlatformDockerContainers(options: { log?: boolean } = {}) {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  const shouldLog = options.log ?? true;
+  try {
+    const { stdout } = await runPlatformOneShot(
+      server,
+      buildDockerContainersCommand(),
+      "Docker container listing"
+    );
+    platformDockerContainers.value = parseDockerContainers(stdout);
+    if (shouldLog) {
+      platformInfo.value = `Loaded ${platformDockerContainers.value.length} Docker container(s).`;
+    }
+  } catch (err) {
+    if (!shouldLog) {
+      throw err;
+    }
+    setPlatformError("Failed to list Docker containers", err);
+  }
+}
+
+async function runPlatformDockerSetup() {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  clearPlatformMessages();
+  try {
+    const dockerfileContent = platformDockerfileContent.value.trim()
+      ? platformDockerfileContent.value
+      : "";
+    const command = buildDockerSetupCommand({
+      installDocker: platformDockerInstallEnabled.value,
+      dockerfileContent,
+      dockerfileTargetPath: platformDockerfileTargetPath,
+    });
+    await runPlatformOneShot(server, command, "Docker setup");
+    await refreshPlatformDockerImages({ log: false });
+    await refreshPlatformDockerContainers({ log: false });
+    platformInfo.value = dockerfileContent
+      ? `Docker setup finished for ${server.name ?? server.id ?? "selected ECS"}. Dockerfile uploaded to ${platformDockerfileTargetPath}.`
+      : `Docker setup finished for ${server.name ?? server.id ?? "selected ECS"}.`;
+    await sendUserNotification(
+      "Docker setup complete",
+      dockerfileContent
+        ? `${server.name ?? server.id ?? "ECS"} is ready for Docker workflows and received a Dockerfile.`
+        : `${server.name ?? server.id ?? "ECS"} is ready for Docker workflows.`
+    );
+  } catch (err) {
+    setPlatformError("Docker setup failed", err);
+  }
+}
+
+async function importPlatformDockerfile(file: File) {
+  const server = platformPanelServer.value;
+  const label = server?.name ?? server?.id ?? "selected ECS";
+  if (!(file instanceof File)) {
+    setPlatformError("Failed to import Dockerfile", new Error("No file selected."));
+    return;
+  }
+
+  try {
+    const content = await file.text();
+    if (!content.trim()) {
+      throw new Error("Dockerfile is empty.");
+    }
+    platformDockerfileContent.value = content.replace(/\r\n/g, "\n");
+
+    platformInfo.value = `Imported Dockerfile from ${file.name} for ${label}.`;
+    platformError.value = null;
+    addLog("app", "info", `Imported Dockerfile from ${file.name} for ${label}.`);
+  } catch (err) {
+    setPlatformError("Failed to import Dockerfile", err);
+  }
+}
+
+async function runPlatformMinikubeSetup() {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  clearPlatformMessages();
+  try {
+    const command = buildMinikubeSetupCommand({
+      installMinikube: platformMinikubeInstallEnabled.value,
+      ensureDocker: platformMinikubeEnsureDocker.value,
+      autoStart: platformMinikubeAutoStart.value,
+      profile: safePlatformProfile(),
+      driver: platformMinikubeDriver.value,
+      cpus: safePlatformCpus(),
+      memoryMb: safePlatformMemoryMb(),
+      kubernetesVersion: platformMinikubeK8sVersion.value.trim(),
+    });
+    await runPlatformOneShot(server, command, "Minikube setup");
+    await refreshPlatformMinikubeStatus({ log: false });
+    await refreshPlatformMinikubeNodes({ log: false });
+    await refreshPlatformMinikubePods({ log: false });
+    platformInfo.value = `Minikube setup finished for profile ${safePlatformProfile()}.`;
+    await sendUserNotification(
+      "Minikube setup complete",
+      `${server.name ?? server.id ?? "ECS"} is ready for local Kubernetes testing.`
+    );
+  } catch (err) {
+    setPlatformError("Minikube setup failed", err);
+  }
+}
+
+async function refreshPlatformMinikubeStatus(options: { log?: boolean } = {}) {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  const profile = safePlatformProfile();
+  const shouldLog = options.log ?? true;
+  try {
+    const { stdout, stderr } = await runPlatformOneShot(
+      server,
+      buildMinikubeStatusCommand(profile),
+      "Minikube status"
+    );
+    platformMinikubeStatus.value = formatPlatformOutput(stdout, stderr);
+    if (shouldLog) {
+      platformInfo.value = `Minikube status refreshed for profile ${profile}.`;
+    }
+  } catch (err) {
+    if (!shouldLog) {
+      throw err;
+    }
+    setPlatformError("Failed to read Minikube status", err);
+  }
+}
+
+async function refreshPlatformMinikubeNodes(options: { log?: boolean } = {}) {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  const profile = safePlatformProfile();
+  const shouldLog = options.log ?? true;
+  try {
+    const { stdout, stderr } = await runPlatformOneShot(
+      server,
+      buildMinikubeNodesCommand(profile),
+      "Minikube nodes listing"
+    );
+    platformMinikubeNodes.value = formatPlatformOutput(stdout, stderr);
+    if (shouldLog) {
+      platformInfo.value = `Cluster nodes refreshed for profile ${profile}.`;
+    }
+  } catch (err) {
+    if (!shouldLog) {
+      throw err;
+    }
+    setPlatformError("Failed to list Minikube nodes", err);
+  }
+}
+
+async function refreshPlatformMinikubePods(options: { log?: boolean } = {}) {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  const profile = safePlatformProfile();
+  const shouldLog = options.log ?? true;
+  try {
+    const { stdout, stderr } = await runPlatformOneShot(
+      server,
+      buildMinikubePodsCommand(profile),
+      "Minikube pods listing"
+    );
+    platformMinikubePods.value = formatPlatformOutput(stdout, stderr);
+    if (shouldLog) {
+      platformInfo.value = `Cluster pods refreshed for profile ${profile}.`;
+    }
+  } catch (err) {
+    if (!shouldLog) {
+      throw err;
+    }
+    setPlatformError("Failed to list Minikube pods", err);
+  }
+}
+
+async function runPlatformNixSetup() {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  clearPlatformMessages();
+  try {
+    const command = buildNixSetupCommand({
+      installNix: platformNixInstallEnabled.value,
+      enableFlakes: platformNixEnableFlakes.value,
+      runGarbageCollect: platformNixRunGarbageCollect.value,
+      packages: platformNixPackagesInput.value,
+    });
+    await runPlatformOneShot(server, command, "Nix setup");
+    await refreshPlatformNixVersion({ log: false });
+    await refreshPlatformNixPackages({ log: false });
+    await refreshPlatformNixStoreUsage({ log: false });
+    platformInfo.value = `Nix setup finished for ${server.name ?? server.id ?? "selected ECS"}.`;
+    await sendUserNotification(
+      "Nix setup complete",
+      `${server.name ?? server.id ?? "ECS"} is ready for Nix workflows.`
+    );
+  } catch (err) {
+    setPlatformError("Nix setup failed", err);
+  }
+}
+
+async function refreshPlatformNixVersion(options: { log?: boolean } = {}) {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  const shouldLog = options.log ?? true;
+  try {
+    const { stdout, stderr } = await runPlatformOneShot(
+      server,
+      buildNixVersionCommand(),
+      "Nix version inspection"
+    );
+    platformNixVersion.value = formatPlatformOutput(stdout, stderr);
+    if (shouldLog) {
+      platformInfo.value = "Nix version information refreshed.";
+    }
+  } catch (err) {
+    if (!shouldLog) {
+      throw err;
+    }
+    setPlatformError("Failed to read Nix version info", err);
+  }
+}
+
+async function refreshPlatformNixPackages(options: { log?: boolean } = {}) {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  const shouldLog = options.log ?? true;
+  try {
+    const { stdout, stderr } = await runPlatformOneShot(
+      server,
+      buildNixPackagesCommand(),
+      "Nix package listing"
+    );
+    const output = stdout.trim() ? stdout : stderr;
+    platformNixPackages.value = parseNixPackages(output);
+    if (shouldLog) {
+      platformInfo.value = `Loaded ${platformNixPackages.value.length} Nix package(s).`;
+    }
+  } catch (err) {
+    if (!shouldLog) {
+      throw err;
+    }
+    setPlatformError("Failed to list Nix packages", err);
+  }
+}
+
+async function refreshPlatformNixStoreUsage(options: { log?: boolean } = {}) {
+  const server = platformPanelServer.value;
+  if (!server) {
+    return;
+  }
+  const shouldLog = options.log ?? true;
+  try {
+    const { stdout, stderr } = await runPlatformOneShot(
+      server,
+      buildNixStoreUsageCommand(),
+      "Nix store usage"
+    );
+    platformNixStoreUsage.value = formatPlatformOutput(stdout, stderr);
+    if (shouldLog) {
+      platformInfo.value = "Nix store usage refreshed.";
+    }
+  } catch (err) {
+    if (!shouldLog) {
+      throw err;
+    }
+    setPlatformError("Failed to read Nix store usage", err);
+  }
 }
 
 function setActiveSshServer(ecs: EcsServer) {
@@ -2124,10 +4524,16 @@ async function toggleSshForEcs(ecs: EcsServer) {
   }
 
   if (sshSession.value?.serverId === serverId && !sshPanelOpen.value) {
+    if (platformPanelOpen.value) {
+      closePlatformPanel();
+    }
     setActiveSshServer(ecs);
     return;
   }
 
+  if (platformPanelOpen.value) {
+    closePlatformPanel();
+  }
   await openAndConnectSsh(ecs);
 }
 
@@ -2207,8 +4613,12 @@ async function runAutoUpdateForServer(server: EcsServer, host: string) {
     lastLine: `Connecting for ${startupTaskLabel(config)}...`,
   });
 
-  const startupCommand = buildStartupTaskCommand(config);
+  const startupCommand = buildStartupTaskCommand(config, password);
+  const rdpUser = startupTaskRdpUser(config);
   addLog("app", "info", `Running ${startupTaskLabel(config)} on ${label} (${host}).`);
+  if (rdpUser) {
+    addLog("app", "info", `RDP login for ${label} will use "${rdpUser}" on ${host}:3389.`);
+  }
   try {
     const response = await invoke<SshExecOneShotResult>("ssh_exec_one_shot", {
       params: {
@@ -2221,9 +4631,15 @@ async function runAutoUpdateForServer(server: EcsServer, host: string) {
       },
     });
 
-    const exitStatus = response.exitStatus ?? 0;
+    const exitStatus = response.exitStatus;
     const stderr = sanitizeSshText(response.stderr).trim();
     const stdout = sanitizeSshText(response.stdout).trim();
+    if (exitStatus == null) {
+      const summary = stderr || stdout || "missing remote exit status";
+      throw new Error(
+        `${startupTaskLabel(config)} failed for ${label}: remote command did not report an exit status (${summary}).`
+      );
+    }
     if (exitStatus !== 0) {
       const summary = stderr || stdout || `exit status ${exitStatus}`;
       throw new Error(`${startupTaskLabel(config)} failed for ${label}: ${summary}`);
@@ -2241,7 +4657,7 @@ async function runAutoUpdateForServer(server: EcsServer, host: string) {
     }
   } finally {
     const tail = sanitizeSshText(autoUpdateSessionLineBuffer.get(sessionId) ?? "").trim();
-    if (tail) {
+    if (tail && /\[hc-forge\]/i.test(tail)) {
       setAutoUpdateProgress(serverId, {
         lastLine: tail.slice(0, 220),
       });
@@ -2624,11 +5040,15 @@ async function registerStartupTasksForServer(
   }
 
   await persistServerPassword(serverId, password);
+  const rdpUsername = config.setupGuiRdp
+    ? normalizeRdpUsername(config.rdpUsername) ?? generateRdpUsername()
+    : null;
   startupTaskConfigsByServer.value = {
     ...startupTaskConfigsByServer.value,
     [serverId]: {
       ...config,
       region: config.region || region.value,
+      rdpUsername,
       lastStatus: "pending",
       updatedAt: new Date().toISOString(),
     },
@@ -3263,6 +5683,34 @@ async function refreshCreatedInstance(
   return server ?? null;
 }
 
+async function loadResponseData(options: { log?: boolean } = {}) {
+  if (loadingResponse.value || loadingEips.value || loadingEvss.value || loadingEcses.value) {
+    return;
+  }
+
+  const shouldLog = options.log ?? true;
+  loadingResponse.value = true;
+  errorMsg.value = "";
+
+  if (shouldLog) {
+    addLog("app", "info", `Reloading response resources for region ${region.value}.`);
+  }
+
+  try {
+    await Promise.all([loadEips({ log: false }), loadEvss({ log: false }), loadEcses({ log: false })]);
+    await refreshCreatedInstance(createSummary.value?.serverId ?? createdServer.value?.id ?? null, {
+      withEips: true,
+      skipReload: true,
+    });
+
+    if (shouldLog) {
+      addLog("app", "info", `Finished reloading response resources for region ${region.value}.`);
+    }
+  } finally {
+    loadingResponse.value = false;
+  }
+}
+
 async function loadAll() {
   if (loadingAll.value) {
     return;
@@ -3525,6 +5973,7 @@ async function createEcs() {
     region: region.value,
     autoUpdate: autoUpdateVmOnStartup.value,
     setupGuiRdp: setupGuiRdpOnStartup.value,
+    rdpUsername: setupGuiRdpOnStartup.value ? generateRdpUsername() : null,
     lastStatus: "pending",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -3686,17 +6135,37 @@ async function createEcs() {
     <section class="hero service-hero">
       <div>
         <p class="eyebrow">Service</p>
-        <h2>Elastic Cloud Server</h2>
+        <h2>{{ activeModuleMeta.title }}</h2>
+        <p class="service-subtitle">{{ activeModuleMeta.subtitle }}</p>
       </div>
-      <div class="chip tw-pill">ECS Module</div>
+      <div class="module-switcher">
+        <button
+          class="ghost minor module-switch-btn"
+          type="button"
+          title="Previous service module"
+          @click="cycleServiceModule('prev')"
+        >
+          &lt;
+        </button>
+        <div class="chip tw-pill">{{ activeModuleMeta.chip }}</div>
+        <button
+          class="ghost minor module-switch-btn"
+          type="button"
+          title="Next service module"
+          @click="cycleServiceModule('next')"
+        >
+          &gt;
+        </button>
+      </div>
     </section>
 
-    <div class="layout">
+    <Transition :name="moduleTransitionName" mode="out-in">
+      <div v-if="activeModule === 'ecs'" key="module-ecs" class="layout">
       <section class="panel">
         <div class="panel-head">
           <h2>Server Inputs</h2>
           <button class="primary quick-create" :disabled="!canCreate" @click="createEcs">
-            {{ creating ? "Creating..." : "Create ECS" }}
+            {{ creating ? "Creating..." : "Create" }}
           </button>
         </div>
         <div class="grid inputs-grid">
@@ -3731,15 +6200,13 @@ async function createEcs() {
               </div>
               <div class="toggle-inline">
                 <input id="setup-gui-rdp" v-model="setupGuiRdpOnStartup" type="checkbox" />
-                <label for="setup-gui-rdp">Setup GUI + RDP on startup</label>
+                <label for="setup-gui-rdp">Install graphical session + RDP on startup (optional)</label>
               </div>
             </div>
-            <span class="muted tiny">
-              Applies only to VMs created by the current create action. Existing VMs are never changed.
-            </span>
-            <span class="muted tiny">
-              Tasks start when the VM becomes ACTIVE and has a public EIP; progress appears in the ECS card and logs.
-            </span>
+            <div class="startup-tip-box muted tiny">
+              <p>Applies only to newly created VMs. Existing VMs are never changed.</p>
+              <p>For RDP, open inbound TCP 3389 in the security group and log in with the generated <span class="mono">hcforge&lt;random&gt;</span> user shown in ECS cards (password = VM admin password).</p>
+            </div>
           </div>
 
           <div class="field span-2">
@@ -3841,7 +6308,7 @@ async function createEcs() {
               <span v-if="passwordCopyFeedback" class="copy-feedback tiny">
                 {{ passwordCopyFeedback }}
               </span>
-              <button class="ghost minor fold-copy" type="button" @click="copyCurrentPassword">
+              <button class="ghost minor action-chip fold-copy" type="button" @click="copyCurrentPassword">
                 Copy Password
               </button>
             </div>
@@ -3894,7 +6361,7 @@ async function createEcs() {
                     </button>
                   </div>
                   <div class="password-actions">
-                    <button class="ghost minor" type="button" @click="copyCurrentPassword">
+                    <button class="ghost minor action-chip" type="button" @click="copyCurrentPassword">
                       Copy Password
                     </button>
                     <span class="muted tiny">
@@ -4162,7 +6629,7 @@ async function createEcs() {
 
         <div class="bottom-create-row">
           <button class="primary cta bottom-create" :disabled="!canCreate" @click="createEcs">
-            {{ creating ? "Creating..." : "Create ECS" }}
+            {{ creating ? "Creating..." : "Create" }}
           </button>
         </div>
 
@@ -4177,340 +6644,276 @@ async function createEcs() {
         </p>
       </section>
 
-      <section class="panel output">
-        <div class="output-header">
-          <h2>Response</h2>
-        </div>
+      <EcsResponsePanel
+        :quick-copy-feedback="quickCopyFeedback"
+        :error-msg="errorMsg"
+        :delete-msg="deleteMsg"
+        :create-summary="createSummary"
+        :created-server="createdServer"
+        :created-eip="createdEip"
+        :polling-ecs="pollingEcs"
+        :polling-attempts="pollingAttempts"
+        :poll-max-attempts="POLL_MAX_ATTEMPTS"
+        :polling-status="pollingStatus"
+        :polling-error="pollingError"
+        :can-watch="canWatch"
+        :result="result"
+        :eips="eips"
+        :evss="evss"
+        :ecses="ecses"
+        :loading-response="loadingResponse || loadingEips || loadingEvss || loadingEcses"
+        :loading-eips="loadingEips"
+        :loading-evss="loadingEvss"
+        :loading-ecses="loadingEcses"
+        :cache-age-eips="cacheAge.eips"
+        :cache-age-evss="cacheAge.evss"
+        :cache-age-ecses="cacheAge.ecses"
+        :ssh-panel-open="sshPanelOpen"
+        :ssh-panel-server="sshPanelServer"
+        :ssh-panel-host="sshPanelHost"
+        :ssh-connected-to-panel="sshConnectedToPanel"
+        :ssh-busy-server-id="sshBusyServerId"
+        :stopping-server-id="stoppingServerId"
+        :deleting-server-id="deletingServerId"
+        :ssh-running-command="sshRunningCommand"
+        :ssh-use-form-password="sshUseFormPassword"
+        :ssh-manual-password="sshManualPassword"
+        :ssh-command-input="sshCommandInput"
+        :ssh-terminal-entries="sshTerminalEntries"
+        :status-tone="statusTone"
+        :copy-eip-address="copyEipAddress"
+        :evs-role="evsRole"
+        :evs-attached-server="evsAttachedServer"
+        :find-ssh-host-for-server="findSshHostForServer"
+        :auto-update-status-for-server="autoUpdateStatusForServer"
+        :auto-update-status-label="autoUpdateStatusLabel"
+        :auto-update-progress-hint="autoUpdateProgressHint"
+        :startup-task-rdp-user-for-server="startupTaskRdpUserForServer"
+        :login-username-for-server="loginUsernameForServer"
+        :copy-login-username-for-server="copyLoginUsernameForServer"
+        :has-saved-password-for-server="hasSavedPasswordForServer"
+        :copy-password-for-server="copyPasswordForServer"
+        :is-ssh-open-for-ecs="isSshOpenForEcs"
+        :can-connect-ssh="canConnectSsh"
+        :toggle-ssh-for-ecs="toggleSshForEcs"
+        :ssh-button-label="sshButtonLabel"
+        :can-stop-ecs="canStopEcs"
+        :stop-ecs="stopEcs"
+        :delete-ecs="deleteEcs"
+        :start-polling="startPolling"
+        :stop-polling="stopPolling"
+        :reload-response-data="loadResponseData"
+        :reload-eips="loadEips"
+        :reload-evss="loadEvss"
+        :reload-ecses="loadEcses"
+        :close-ssh-panel="closeSshPanel"
+        :clear-ssh-terminal="clearSshTerminal"
+        :reconnect-ssh-for-panel="reconnectSshForPanel"
+        :disconnect-active-ssh="disconnectActiveSsh"
+        :run-ssh-command="runSshCommand"
+        :send-ssh-control-shortcut="sendSshControlShortcut"
+        :handle-ssh-terminal-resize="handleSshTerminalResize"
+        :handle-ssh-command-keydown="handleSshCommandKeydown"
+        :set-ssh-use-form-password="setSshUseFormPassword"
+        :set-ssh-manual-password="setSshManualPassword"
+        :set-ssh-command-input="setSshCommandInput"
+        :platform-panel-open="platformPanelOpen"
+        :platform-panel-server="platformPanelServer"
+        :platform-panel-host="platformPanelHost"
+        :platform-panel-busy="platformPanelBusy"
+        :platform-busy-server-id="platformBusyServerId"
+        :platform-action-label="platformActionLabel"
+        :platform-error="platformError"
+        :platform-info="platformInfo"
+        :platform-active-tab="platformActiveTab"
+        :platform-docker-install-enabled="platformDockerInstallEnabled"
+        :platform-docker-images="platformDockerImages"
+        :platform-docker-containers="platformDockerContainers"
+        :platform-dockerfile-target-path="platformDockerfileTargetPath"
+        :platform-dockerfile-content="platformDockerfileContent"
+        :platform-minikube-install-enabled="platformMinikubeInstallEnabled"
+        :platform-minikube-ensure-docker="platformMinikubeEnsureDocker"
+        :platform-minikube-auto-start="platformMinikubeAutoStart"
+        :platform-minikube-profile="platformMinikubeProfile"
+        :platform-minikube-driver="platformMinikubeDriver"
+        :platform-minikube-cpus="platformMinikubeCpus"
+        :platform-minikube-memory-mb="platformMinikubeMemoryMb"
+        :platform-minikube-k8s-version="platformMinikubeK8sVersion"
+        :platform-minikube-status="platformMinikubeStatus"
+        :platform-minikube-nodes="platformMinikubeNodes"
+        :platform-minikube-pods="platformMinikubePods"
+        :platform-nix-install-enabled="platformNixInstallEnabled"
+        :platform-nix-enable-flakes="platformNixEnableFlakes"
+        :platform-nix-run-garbage-collect="platformNixRunGarbageCollect"
+        :platform-nix-packages-input="platformNixPackagesInput"
+        :platform-nix-version="platformNixVersion"
+        :platform-nix-packages="platformNixPackages"
+        :platform-nix-store-usage="platformNixStoreUsage"
+        :is-platform-open-for-ecs="isPlatformOpenForEcs"
+        :platform-button-label="platformButtonLabel"
+        :toggle-platform-for-ecs="togglePlatformForEcs"
+        :close-platform-panel="closePlatformPanel"
+        :set-platform-active-tab="setPlatformActiveTab"
+        :set-platform-docker-install-enabled="setPlatformDockerInstallEnabled"
+        :set-platform-dockerfile-content="setPlatformDockerfileContent"
+        :set-platform-minikube-install-enabled="setPlatformMinikubeInstallEnabled"
+        :set-platform-minikube-ensure-docker="setPlatformMinikubeEnsureDocker"
+        :set-platform-minikube-auto-start="setPlatformMinikubeAutoStart"
+        :set-platform-minikube-profile="setPlatformMinikubeProfile"
+        :set-platform-minikube-driver="setPlatformMinikubeDriver"
+        :set-platform-minikube-cpus="setPlatformMinikubeCpus"
+        :set-platform-minikube-memory-mb="setPlatformMinikubeMemoryMb"
+        :set-platform-minikube-k8s-version="setPlatformMinikubeK8sVersion"
+        :set-platform-nix-install-enabled="setPlatformNixInstallEnabled"
+        :set-platform-nix-enable-flakes="setPlatformNixEnableFlakes"
+        :set-platform-nix-run-garbage-collect="setPlatformNixRunGarbageCollect"
+        :set-platform-nix-packages-input="setPlatformNixPackagesInput"
+        :run-platform-docker-setup="runPlatformDockerSetup"
+        :refresh-platform-docker-images="refreshPlatformDockerImages"
+        :refresh-platform-docker-containers="refreshPlatformDockerContainers"
+        :import-platform-dockerfile="importPlatformDockerfile"
+        :run-platform-minikube-setup="runPlatformMinikubeSetup"
+        :refresh-platform-minikube-status="refreshPlatformMinikubeStatus"
+        :refresh-platform-minikube-nodes="refreshPlatformMinikubeNodes"
+        :refresh-platform-minikube-pods="refreshPlatformMinikubePods"
+        :run-platform-nix-setup="runPlatformNixSetup"
+        :refresh-platform-nix-version="refreshPlatformNixVersion"
+        :refresh-platform-nix-packages="refreshPlatformNixPackages"
+        :refresh-platform-nix-store-usage="refreshPlatformNixStoreUsage"
+      />
+      </div>
 
-        <p v-if="errorMsg" class="error">{{ errorMsg }}</p>
-        <p v-if="deleteMsg" class="muted tiny">{{ deleteMsg }}</p>
+      <CceModulePanel
+        v-else-if="activeModule === 'cce'"
+        key="module-cce"
+        v-model:region="region"
+        v-model:cluster-name="cceClusterName"
+        v-model:cluster-version="cceClusterVersion"
+        v-model:cluster-flavor="cceClusterFlavor"
+        v-model:cluster-type="cceClusterType"
+        v-model:cluster-description="cceClusterDescription"
+        v-model:cluster-tag-env="cceClusterTagEnv"
+        v-model:cluster-vpc-id="cceClusterVpcId"
+        v-model:cluster-subnet-id="cceClusterSubnetId"
+        v-model:cluster-container-network-mode="cceClusterContainerNetworkMode"
+        v-model:cluster-container-network-cidr="cceClusterContainerNetworkCidr"
+        v-model:cluster-service-cidr="cceClusterServiceCidr"
+        v-model:cluster-authentication-mode="cceClusterAuthenticationMode"
+        v-model:nat-gateway-name="cceNatGatewayName"
+        v-model:nat-gateway-description="cceNatGatewayDescription"
+        v-model:nat-gateway-spec="cceNatGatewaySpec"
+        v-model:selected-access-eip-id="cceSelectedAccessEipId"
+        :cluster-versions="CCE_KUBERNETES_VERSIONS"
+        :cluster-flavors="CCE_CONTROL_PLANE_FLAVORS"
+        :nat-gateway-specs="CCE_NAT_GATEWAY_SPECS"
+        :container-network-cidrs="CCE_CONTAINER_NETWORK_CIDR_OPTIONS"
+        :service-cidrs="CCE_SERVICE_CIDR_OPTIONS"
+        :regions="regions"
+        :cluster-types="CCE_CLUSTER_TYPES"
+        :container-network-modes="CCE_CONTAINER_NETWORK_MODES"
+        :authentication-modes="CCE_AUTHENTICATION_MODES"
+        :vpcs="cceVpcs"
+        :subnets="cceSubnets"
+        :loading-vpcs="cceLoadingVpcs"
+        :loading-subnets="cceLoadingSubnets"
+        :can-create-cluster="cceCanCreateCluster"
+        :creating-cluster="cceCreatingCluster"
+        :clusters="cceClusters"
+        :loading-clusters="cceLoadingClusters"
+        :selected-cluster-id="cceSelectedClusterId"
+        :deleting-cluster-id="cceDeletingClusterId"
+        :node-pools="cceNodePools"
+        :loading-node-pools="cceLoadingNodePools"
+        :last-result="cceLastResult"
+        :job-result="cceJobResult"
+        :last-job-id="cceLastJobId"
+        :loading-job="cceLoadingJob"
+        :nat-gateways="cceNatGateways"
+        :loading-nat-gateways="cceLoadingNatGateways"
+        :can-create-nat-gateway="cceCanCreateNatGateway"
+        :creating-nat-gateway="cceCreatingNatGateway"
+        :deleting-nat-gateway-id="cceDeletingNatGatewayId"
+        :access-eips="cceAccessEips"
+        :loading-access-eips="cceLoadingAccessEips"
+        :selected-cluster-external-ip="cceSelectedClusterExternalIp"
+        :binding-access-eip="cceBindingAccessEip"
+        :downloading-kubeconfig="cceDownloadingKubeconfig"
+        :error-msg="cceErrorMsg"
+        :quick-copy-feedback="quickCopyFeedback"
+        @create-cluster="createCceCluster"
+        @reload-vpcs="loadCceVpcs()"
+        @reload-subnets="loadCceSubnets()"
+        @reload-clusters="loadCceClusters()"
+        @select-cluster="selectCceCluster"
+        @delete-cluster="deleteCceCluster"
+        @reload-node-pools="loadCceNodePools()"
+        @reload-job="loadCceJob()"
+        @reload-nat-gateways="loadCceNatGateways()"
+        @create-nat-gateway="createCceNatGateway"
+        @delete-nat-gateway="deleteCceNatGateway"
+        @reload-access-eips="loadCceAccessEips()"
+        @bind-cluster-access-eip="bindCceClusterApiEip"
+        @download-kubeconfig="downloadCceKubeconfig"
+      />
 
-        <div class="output-grid">
-          <div class="output-card wide">
-            <div class="card-title">Last Create</div>
-            <div v-if="createSummary" class="card-content">
-              <div class="status-row">
-                <span class="badge">{{ createSummary.statusCode }}</span>
-                <span>{{ createSummary.status }}</span>
-              </div>
-              <div class="meta">
-                <div>
-                  <span class="muted tiny">Server ID</span>
-                  <div class="mono">
-                    {{ createSummary.serverId ?? "—" }}
-                  </div>
-                </div>
-                <div>
-                  <span class="muted tiny">Job ID</span>
-                  <div class="mono">{{ createSummary.jobId ?? "—" }}</div>
-                </div>
-              </div>
-              <div v-if="createSummary.message" class="warning">
-                {{ createSummary.message }}
-              </div>
-              <div class="meta">
-                <div>
-                  <span class="muted tiny">Instance</span>
-                  <div>
-                    {{ createdServer?.name ?? "Waiting for ECS data..." }}
-                  </div>
-                </div>
-                <div>
-                  <span class="muted tiny">Status</span>
-                  <div>{{ createdServer?.status ?? "—" }}</div>
-                </div>
-              </div>
-              <div class="meta">
-                <div>
-                  <span class="muted tiny">Public IP</span>
-                  <div class="mono">
-                    {{ createdEip?.public_ip_address ?? "Not associated yet" }}
-                  </div>
-                </div>
-                <div>
-                  <span class="muted tiny">Association</span>
-                  <div class="mono">
-                    {{ createdEip?.associate_instance_id ?? "—" }}
-                  </div>
-                </div>
-              </div>
-              <div class="polling-row">
-                <div>
-                  <span class="muted tiny">Polling</span>
-                  <div>
-                    <span v-if="pollingEcs">
-                      Active ({{ pollingAttempts }}/{{ POLL_MAX_ATTEMPTS }})
-                    </span>
-                    <span v-else>Idle</span>
-                    <span v-if="pollingStatus"> • {{ pollingStatus }} </span>
-                  </div>
-                  <div class="muted tiny">
-                    Target:
-                    {{
-                      createSummary?.serverId ??
-                      createdServer?.id ??
-                      (ecses.length ? "Newest instance" : "—")
-                    }}
-                  </div>
-                  <div v-if="pollingError" class="muted tiny">
-                    {{ pollingError }}
-                  </div>
-                </div>
-                <div class="polling-actions">
-                  <button
-                    class="ghost minor"
-                    :disabled="pollingEcs || !canWatch"
-                    @click="startPolling(createSummary?.serverId ?? createdServer?.id ?? null)"
-                  >
-                    Start Watch
-                  </button>
-                  <button
-                    class="ghost minor"
-                    :disabled="!pollingEcs"
-                    @click="stopPolling"
-                  >
-                    Stop
-                  </button>
-                </div>
-              </div>
-            </div>
-            <p v-else class="muted">No create action yet.</p>
-            <details v-if="result" class="raw">
-              <summary>Raw create response</summary>
-              <pre class="body">{{ result.body }}</pre>
-            </details>
-          </div>
-
-          <div class="output-card">
-            <div class="card-head-inline">
-              <div class="card-title">Elastic IPs</div>
-              <ReloadIconButton
-                :disabled="loadingEips"
-                :loading="loadingEips"
-                :title="loadingEips ? 'Reloading EIPs...' : 'Reload EIPs'"
-                @click="loadEips()"
-              />
-            </div>
-            <div class="card-subtitle">{{ eips.length }} total • Updated {{ cacheAge.eips }}</div>
-            <div v-if="eips.length" class="entity-list eip-list">
-              <article
-                v-for="(eip, index) in eips"
-                :key="eip.id ?? eip.public_ip_address ?? `eip-${index}`"
-                class="entity-item eip-item"
-              >
-                <div class="entity-item-head">
-                  <div class="entity-title mono">{{ eip.public_ip_address ?? "—" }}</div>
-                  <span class="status-pill" :class="statusTone(eip.status)">
-                    {{ eip.status ?? "UNKNOWN" }}
-                  </span>
-                </div>
-                <div class="entity-meta-grid">
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Association</span>
-                    <span class="entity-meta-value mono">{{ eip.associate_instance_id ?? "—" }}</span>
-                  </div>
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">VPC</span>
-                    <span class="entity-meta-value mono">{{ eip.vnic?.vpc_id ?? "—" }}</span>
-                  </div>
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Port</span>
-                    <span class="entity-meta-value mono">{{ eip.vnic?.port_id ?? "—" }}</span>
-                  </div>
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Pool</span>
-                    <span class="entity-meta-value">{{ eip.publicip_pool_name ?? "—" }}</span>
-                  </div>
-                </div>
-              </article>
-            </div>
-            <p v-else class="muted tiny">No elastic IPs found in this region.</p>
-          </div>
-
-          <div class="output-card">
-            <div class="card-head-inline">
-              <div class="card-title">EVS Disks</div>
-              <ReloadIconButton
-                :disabled="loadingEvss"
-                :loading="loadingEvss"
-                :title="loadingEvss ? 'Reloading EVS disks...' : 'Reload EVS disks'"
-                @click="loadEvss()"
-              />
-            </div>
-            <div class="card-subtitle">{{ evss.length }} total • Updated {{ cacheAge.evss }}</div>
-            <div v-if="evss.length" class="entity-list evs-list">
-              <article
-                v-for="(volume, index) in evss"
-                :key="volume.id ?? volume.name ?? `evs-${index}`"
-                class="entity-item evs-item"
-              >
-                <div class="entity-item-head">
-                  <div>
-                    <div class="entity-title mono">{{ volume.name ?? volume.id ?? "—" }}</div>
-                    <div class="muted tiny">
-                      ID: <span class="mono">{{ volume.id ?? "—" }}</span>
-                    </div>
-                  </div>
-                  <span class="status-pill" :class="statusTone(volume.status)">
-                    {{ volume.status ?? "UNKNOWN" }}
-                  </span>
-                </div>
-                <div class="entity-meta-grid">
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Role</span>
-                    <span class="entity-meta-value">{{ evsRole(volume) }}</span>
-                  </div>
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Size</span>
-                    <span class="entity-meta-value">{{ volume.size ?? "—" }} GB</span>
-                  </div>
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Type</span>
-                    <span class="entity-meta-value">{{ volume.volume_type ?? "—" }}</span>
-                  </div>
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Attached ECS</span>
-                    <span class="entity-meta-value mono">{{ evsAttachedServer(volume) }}</span>
-                  </div>
-                </div>
-              </article>
-            </div>
-            <p v-else class="muted tiny">No EVS disks found in this region.</p>
-          </div>
-
-          <div class="output-card">
-            <div class="card-head-inline">
-              <div class="card-title">ECS Instances</div>
-              <ReloadIconButton
-                :disabled="loadingEcses"
-                :loading="loadingEcses"
-                :title="loadingEcses ? 'Reloading ECS instances...' : 'Reload ECS instances'"
-                @click="loadEcses()"
-              />
-            </div>
-            <div class="card-subtitle">
-              {{ ecses.length }} total • Updated {{ cacheAge.ecses }}
-            </div>
-            <div v-if="ecses.length" class="entity-list ecs-list">
-              <article
-                v-for="(ecs, index) in ecses"
-                :key="ecs.id ?? ecs.name ?? `ecs-${index}`"
-                class="entity-item ecs-item"
-              >
-                <div class="entity-item-head">
-                  <div>
-                    <div class="entity-title mono">{{ ecs.name ?? ecs.id ?? "—" }}</div>
-                    <div class="muted tiny">
-                      ID: <span class="mono">{{ ecs.id ?? "—" }}</span>
-                    </div>
-                  </div>
-                  <span class="status-pill" :class="statusTone(ecs.status)">
-                    {{ ecs.status ?? "UNKNOWN" }}
-                  </span>
-                </div>
-                <div class="entity-meta-grid">
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Flavor</span>
-                    <span class="entity-meta-value mono">
-                      {{ ecs.flavor?.name ?? ecs.flavor?.id ?? "—" }}
-                    </span>
-                  </div>
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">AZ</span>
-                    <span class="entity-meta-value">{{ ecs.availability_zone ?? "—" }}</span>
-                  </div>
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Public EIP</span>
-                    <span class="entity-meta-value mono">
-                      {{ findSshHostForServer(ecs) ?? "Not assigned" }}
-                    </span>
-                  </div>
-                  <div class="entity-meta-item">
-                    <span class="entity-meta-key">Startup Tasks</span>
-                    <span
-                      class="entity-meta-value"
-                      :class="{
-                        'update-state-failed': autoUpdateStatusForServer(ecs.id ?? '') === 'failed',
-                        'update-state-running': autoUpdateStatusForServer(ecs.id ?? '') === 'running',
-                      }"
-                    >
-                      {{ autoUpdateStatusLabel(ecs) }}
-                    </span>
-                    <span v-if="autoUpdateProgressHint(ecs.id ?? '')" class="muted tiny update-progress-hint">
-                      {{ autoUpdateProgressHint(ecs.id ?? "") }}
-                    </span>
-                  </div>
-                </div>
-                <div class="ecs-item-actions">
-                  <button
-                    class="ghost minor ssh-action"
-                    :class="{ active: isSshOpenForEcs(ecs) }"
-                    :disabled="
-                      !canConnectSsh(ecs) ||
-                      sshBusyServerId === ecs.id ||
-                      stoppingServerId === ecs.id ||
-                      deletingServerId === ecs.id
-                    "
-                    @click="toggleSshForEcs(ecs)"
-                  >
-                    {{ sshButtonLabel(ecs) }}
-                  </button>
-                  <button
-                    class="ghost minor"
-                    :disabled="!canStopEcs(ecs) || stoppingServerId === ecs.id || deletingServerId === ecs.id"
-                    @click="stopEcs(ecs)"
-                  >
-                    {{ stoppingServerId === ecs.id ? "Stopping..." : "Stop" }}
-                  </button>
-                  <button
-                    class="ghost minor danger"
-                    :disabled="!ecs.id || deletingServerId === ecs.id || stoppingServerId === ecs.id"
-                    @click="deleteEcs(ecs)"
-                  >
-                    {{ deletingServerId === ecs.id ? "Deleting..." : "Delete" }}
-                  </button>
-                </div>
-              </article>
-            </div>
-            <p v-else class="muted tiny">No ECS instances found in this region.</p>
-          </div>
-
-          <SshTerminalPanel
-            :open="sshPanelOpen && !!sshPanelServer"
-            :server-label="sshPanelServer?.name ?? sshPanelServer?.id ?? 'selected ECS'"
-            :host="sshPanelHost"
-            :connected="sshConnectedToPanel"
-            :busy="!!sshPanelServer && sshBusyServerId === sshPanelServer.id"
-            :running="sshRunningCommand"
-            :use-form-password="sshUseFormPassword"
-            :manual-password="sshManualPassword"
-            :terminal-entries="sshTerminalEntries"
-            :command-input="sshCommandInput"
-            :can-reconnect="
-              !!sshPanelServer &&
-              canConnectSsh(sshPanelServer) &&
-              sshBusyServerId !== sshPanelServer.id
-            "
-            :can-disconnect="
-              sshConnectedToPanel &&
-              (!sshPanelServer || sshBusyServerId !== sshPanelServer.id)
-            "
-            :can-run="sshConnectedToPanel && !sshRunningCommand && !!sshCommandInput.trim()"
-            @close="closeSshPanel"
-            @clear="clearSshTerminal"
-            @reconnect="reconnectSshForPanel"
-            @disconnect="disconnectActiveSsh()"
-            @run="runSshCommand"
-            @send-control="sendSshControlShortcut"
-            @terminal-resize="handleSshTerminalResize"
-            @command-keydown="handleSshCommandKeydown"
-            @update:use-form-password="sshUseFormPassword = $event"
-            @update:manual-password="sshManualPassword = $event"
-            @update:command-input="sshCommandInput = $event"
-          />
-        </div>
-      </section>
-    </div>
+      <ObsModulePanel
+        v-else
+        key="module-obs"
+        v-model:region="region"
+        v-model:bucket-name="obsBucketName"
+        v-model:default-storage-class="obsDefaultStorageClass"
+        v-model:bucket-acl="obsBucketAcl"
+        v-model:upload-object-key="obsUploadObjectKey"
+        v-model:upload-content-type="obsUploadContentType"
+        v-model:object-prefix="obsObjectPrefix"
+        v-model:object-marker="obsObjectMarker"
+        v-model:object-max-keys="obsObjectMaxKeys"
+        :regions="regions"
+        :bucket-name-error="obsBucketNameError"
+        :storage-classes="OBS_BUCKET_STORAGE_CLASSES"
+        :bucket-acls="OBS_BUCKET_ACLS"
+        :can-create-bucket="obsCanCreateBucket"
+        :creating-bucket="obsCreatingBucket"
+        :selected-bucket="obsSelectedBucket"
+        :selected-bucket-record="obsSelectedBucketRecord"
+        :buckets="obsBuckets"
+        :loading-buckets="obsLoadingBuckets"
+        :deleting-bucket="obsDeletingBucket"
+        :resolved-upload-content-type="obsResolvedUploadContentType"
+        :single-put-limit-label="obsSinglePutLimitLabel"
+        :can-upload-object="obsCanUploadObject"
+        :uploading-object="obsUploadingObject"
+        :upload-progress="obsUploadProgress"
+        :max-keys-min="OBS_MAX_KEYS_MIN"
+        :max-keys-max="OBS_MAX_KEYS_MAX"
+        :can-load-objects="obsCanLoadObjects"
+        :loading-objects="obsLoadingObjects"
+        :objects="obsObjects"
+        :bucket-total-size-bytes="obsBucketTotalSizeBytes"
+        :bucket-total-object-count="obsBucketTotalObjectCount"
+        :loading-bucket-totals="obsLoadingBucketTotals"
+        :bucket-totals-error="obsBucketTotalsError"
+        :deleting-object="obsDeletingObject"
+        :downloading-object="obsDownloadingObject"
+        :download-progress="obsDownloadProgress"
+        :last-result="obsLastResult"
+        :error-msg="obsErrorMsg"
+        :quick-copy-feedback="quickCopyFeedback"
+        :format-obs-object-size="formatObsObjectSize"
+        @create-bucket="createObsBucket"
+        @reload-buckets="loadObsBuckets()"
+        @select-bucket="selectObsBucket"
+        @copy-bucket-name="copyObsBucketName"
+        @delete-bucket="deleteObsBucket"
+        @upload-file="onObsUploadFileChange"
+        @upload-object="uploadObsObject"
+        @reload-objects="reloadObsObjectsAndTotals()"
+        @search-objects="reloadObsObjectsAndTotals()"
+        @download-object="downloadObsObject"
+        @copy-object-key="copyObsObjectKey"
+        @delete-object="deleteObsObject"
+      />
+    </Transition>
     <transition name="dialog">
       <div v-if="confirmDialog.open" class="dialog-scrim" @click.self="closeConfirmDialog(false)">
         <section class="dialog-shell" role="dialog" aria-modal="true">
@@ -4543,1177 +6946,4 @@ async function createEcs() {
   </main>
 </template>
 
-<style>
-:root {
-  --ink: #2f0f14;
-  --muted: #74484f;
-  --panel: #ffffff;
-  --panel-border: #efc2c7;
-  --surface-soft: #fff8f8;
-  --surface-tint: #fff0f1;
-  --accent: #c32936;
-  --accent-strong: #a61f2c;
-  --accent-warm: #e07a39;
-  --danger: #b42318;
-  --bg: #fff5f6;
-  --bg-strong: #ffdfe2;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-  font-size: 15px;
-  line-height: 1.5;
-  color: var(--ink);
-  background: var(--bg);
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-body {
-  margin: 0;
-  background:
-    radial-gradient(circle at 6% 8%, rgba(195, 41, 54, 0.12), transparent 34%),
-    radial-gradient(circle at 98% 0%, rgba(224, 122, 57, 0.08), transparent 32%),
-    linear-gradient(180deg, #fffafb 0%, #fff3f5 100%);
-  min-height: 100vh;
-}
-
-#app {
-  min-height: 100vh;
-}
-
-.page {
-  max-width: none;
-  width: 100%;
-  margin: 0;
-  padding: 14px 14px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.hero {
-  display: flex;
-  gap: 18px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.eyebrow {
-  font-size: 0.74rem;
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
-  margin: 0 0 6px;
-  font-weight: 700;
-  color: #9b6c74;
-}
-
-.topbar {
-  display: flex;
-  gap: 20px;
-  align-items: flex-start;
-  justify-content: space-between;
-  padding: 16px 18px;
-  border-radius: 16px;
-  background:
-    radial-gradient(circle at 82% 16%, rgba(253, 164, 175, 0.2), transparent 30%),
-    linear-gradient(135deg, #330f16 0%, #4f1521 56%, #6e1d2b 100%);
-  color: #fff7f7;
-  border: 1px solid rgba(254, 202, 202, 0.3);
-  box-shadow: 0 12px 24px rgba(123, 37, 44, 0.24);
-}
-
-.brand {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.topbar h1 {
-  font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
-  font-size: 1.9rem;
-  margin: 0 0 4px;
-  letter-spacing: 0.01em;
-}
-
-.subtitle {
-  margin: 0;
-  max-width: 560px;
-  color: rgba(241, 245, 249, 0.8);
-  font-size: 0.93rem;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: transparent;
-  border: 0;
-  font-weight: 700;
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  text-align: center;
-}
-
-.service-hero .chip.tw-pill {
-  border-color: rgba(252, 165, 165, 0.95);
-  background: rgba(127, 29, 29, 0.3);
-  color: #fee2e2;
-  letter-spacing: 0.08em;
-}
-
-.credentials-card {
-  min-width: 390px;
-  background: rgba(255, 249, 250, 0.98);
-  color: var(--ink);
-  border-radius: 14px;
-  padding: 12px;
-  border: 1px solid rgba(242, 201, 206, 0.92);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.94),
-    0 8px 20px rgba(123, 37, 44, 0.12);
-}
-
-.cred-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.cred-actions {
-  margin-top: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.mini-field {
-  display: grid;
-  gap: 4px;
-  font-weight: 600;
-}
-
-.mini-field span {
-  font-size: 0.72rem;
-  color: #7c4e56;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.service-hero {
-  padding: 12px 16px;
-  border-radius: 16px;
-  background:
-    linear-gradient(130deg, rgba(82, 20, 29, 0.96), rgba(116, 27, 39, 0.94)),
-    linear-gradient(45deg, rgba(224, 122, 57, 0.15), transparent 65%);
-  color: #fff5f5;
-  border: 1px solid rgba(252, 165, 165, 0.24);
-  box-shadow: 0 8px 16px rgba(123, 37, 44, 0.16);
-}
-
-.service-hero h2 {
-  margin: 0;
-  font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
-  font-size: 1.62rem;
-}
-
-.layout {
-  display: grid;
-  grid-template-columns: minmax(560px, 1.2fr) minmax(460px, 1fr);
-  align-items: start;
-  gap: 12px;
-}
-
-.panel {
-  background: var(--panel);
-  border-radius: 16px;
-  padding: 16px;
-  box-shadow: 0 10px 22px rgba(123, 37, 44, 0.08);
-  border: 1px solid var(--panel-border);
-  backdrop-filter: blur(1px);
-  animation: panel-in 280ms ease both;
-}
-
-.panel h2 {
-  margin: 0 0 10px;
-  font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
-  font-size: 1.2rem;
-  letter-spacing: 0.01em;
-}
-
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.panel-head h2 {
-  margin: 0;
-}
-
-.quick-create {
-  min-width: 172px;
-  min-height: 40px;
-}
-
-.fold-section {
-  margin-top: 12px;
-  border: 1px solid #f0ccd0;
-  border-radius: 14px;
-  background: linear-gradient(180deg, rgba(255, 250, 250, 0.95), rgba(255, 245, 246, 0.98));
-  overflow: hidden;
-}
-
-.fold-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-right: 8px;
-  border-bottom: 1px solid #f0d0d4;
-  background: rgba(255, 243, 244, 0.98);
-}
-
-.grid > .fold-section {
-  margin-top: 0;
-}
-
-.fold-toggle {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 0;
-  border-bottom: 0;
-  border-radius: 0;
-  box-shadow: none;
-  background: rgba(255, 243, 244, 0.98);
-  color: #5d2029;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  font-size: 0.82rem;
-  text-transform: uppercase;
-}
-
-.fold-toggle:hover,
-.fold-toggle:active,
-.fold-toggle:focus-visible {
-  transform: none;
-  opacity: 1;
-  box-shadow: none;
-}
-
-.fold-copy {
-  flex: 0 0 auto;
-}
-
-.copy-feedback {
-  color: #9f1239;
-  white-space: nowrap;
-  margin-right: 2px;
-}
-
-.fold-state {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: #a1656f;
-}
-
-.fold-body {
-  padding: 10px;
-  display: grid;
-  gap: 10px;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.inputs-grid {
-  grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);
-}
-
-.field {
-  display: grid;
-  gap: 8px;
-  font-weight: 500;
-  padding: 11px;
-  border-radius: 12px;
-  border: 1px solid #f0ccd0;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
-}
-
-.field > span:first-child {
-  font-size: 0.8rem;
-  color: #6a2530;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-}
-
-.field-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.field-title-row > span {
-  font-size: 0.8rem;
-  color: #6a2530;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-}
-
-.field-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.field-error {
-  color: var(--danger);
-  font-weight: 600;
-}
-
-.span-2 {
-  grid-column: span 2;
-}
-
-.region-field {
-  max-width: none;
-}
-
-.region-field select {
-  max-width: none;
-}
-
-.startup-update-field {
-  gap: 6px;
-}
-
-.startup-task-toggles {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px 14px;
-}
-
-.combo {
-  display: grid;
-  gap: 8px;
-}
-
-.inline-pairs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.toggle-inline {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 0.84rem;
-  color: #6f4149;
-  line-height: 1.3;
-}
-
-input,
-select,
-textarea {
-  padding: 0 12px;
-  min-height: 40px;
-  border-radius: 10px;
-  border: 1px solid #e8c0c6;
-  background: #ffffff;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-  font-size: 0.9rem;
-  color: #3f1820;
-  transition: border-color 0.18s, box-shadow 0.18s, background-color 0.18s;
-  box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.04);
-}
-
-select {
-  appearance: none;
-  background-image:
-    linear-gradient(45deg, transparent 50%, #9f3a47 50%),
-    linear-gradient(135deg, #9f3a47 50%, transparent 50%),
-    linear-gradient(to right, transparent, transparent);
-  background-position:
-    calc(100% - 16px) calc(50% - 3px),
-    calc(100% - 11px) calc(50% - 3px),
-    100% 0;
-  background-size:
-    5px 5px,
-    5px 5px,
-    2.5em 2.5em;
-  background-repeat: no-repeat;
-  padding-right: 34px;
-  line-height: 1.2;
-}
-
-textarea {
-  padding: 10px 12px;
-  min-height: 92px;
-  resize: vertical;
-  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
-  line-height: 1.42;
-}
-
-input:focus,
-select:focus,
-textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(195, 41, 54, 0.16);
-}
-
-input:disabled,
-select:disabled,
-textarea:disabled {
-  background: #fdf2f3;
-  color: #b58d95;
-}
-
-input[type="range"] {
-  padding: 0;
-  accent-color: var(--accent);
-}
-
-.password-field {
-  background: linear-gradient(180deg, rgba(255, 246, 247, 0.98), rgba(255, 241, 242, 0.96));
-  border-color: rgba(195, 41, 54, 0.3);
-}
-
-.password-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.password-input-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 46px;
-  gap: 7px;
-  align-items: center;
-}
-
-.password-input-row input {
-  min-height: 38px;
-}
-
-.eye-toggle {
-  padding: 0;
-  min-width: 46px;
-  min-height: 38px;
-  font-size: 0.95rem;
-}
-
-.range-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px;
-  gap: 10px;
-  align-items: center;
-}
-
-.range-meta {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.82rem;
-  color: #8c5a63;
-}
-
-.toggle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 16px;
-  font-weight: 500;
-}
-
-.divider {
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(195, 41, 54, 0.4), transparent);
-  margin: 24px 0;
-}
-
-.advanced {
-  margin-top: 0;
-  padding: 12px;
-  border-radius: 12px;
-  background: #fff8f8;
-  border: 1px dashed rgba(148, 163, 184, 0.52);
-}
-
-.advanced-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-  font-weight: 600;
-  color: #6f3942;
-}
-
-.minor-grid .field span {
-  font-size: 0.78rem;
-  color: #8c5a63;
-}
-
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.network-actions {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.minor-actions {
-  margin-top: 10px;
-}
-
-button {
-  border: 1px solid transparent;
-  border-radius: 10px;
-  min-height: 36px;
-  padding: 0 13px;
-  font-weight: 650;
-  cursor: pointer;
-  font-size: 0.84rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  white-space: nowrap;
-  transition:
-    box-shadow 0.18s ease,
-    opacity 0.18s,
-    background-color 0.16s ease,
-    border-color 0.16s ease,
-    color 0.16s ease;
-  line-height: 1;
-}
-
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-  box-shadow: none;
-}
-
-button:hover,
-button:active,
-button:focus-visible {
-  transform: none;
-}
-
-.primary {
-  background: linear-gradient(135deg, #a61f2c 0%, #c32936 100%);
-  color: #fff;
-  border-color: rgba(166, 31, 44, 0.45);
-  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.1);
-}
-
-.primary:not(:disabled):hover {
-  background: linear-gradient(135deg, #951c28 0%, #ad2632 100%);
-  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.16);
-}
-
-.ghost {
-  background: #fff8f8;
-  border: 1px solid #efc2c7;
-  color: #6c2530;
-}
-
-.ghost:not(:disabled):hover {
-  background: #fff1f2;
-  border-color: #e5a8af;
-}
-
-.minor {
-  padding: 0 10px;
-  min-height: 34px;
-  font-size: 0.82rem;
-  font-weight: 600;
-  background: #fff7f7;
-  border-color: #efc2c7;
-}
-
-.danger {
-  border-color: rgba(180, 35, 24, 0.34);
-  color: var(--danger);
-  background: #fff6f5;
-}
-
-.danger:not(:disabled):hover {
-  background: #feeceb;
-  border-color: rgba(180, 35, 24, 0.45);
-}
-
-.cta {
-  grid-column: 1 / -1;
-  min-height: 40px;
-  font-size: 0.94rem;
-  padding: 0 14px;
-}
-
-.bottom-create-row {
-  margin-top: 10px;
-}
-
-.bottom-create {
-  width: 100%;
-}
-
-.card-head-inline {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-}
-
-.output {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  position: sticky;
-  top: 12px;
-  max-height: calc(100vh - 24px);
-  overflow: auto;
-  padding-right: 4px;
-}
-
-.output-header {
-  margin-bottom: 2px;
-}
-
-.output-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
-}
-
-.output-card {
-  border-radius: 14px;
-  border: 1px solid #efc2c7;
-  padding: 12px 14px;
-  background: #fffafb;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 170px;
-  min-width: 0;
-  box-shadow: 0 6px 14px rgba(123, 37, 44, 0.06);
-  animation: card-in 260ms ease both;
-}
-
-.output-card.wide {
-  grid-column: auto;
-  animation-delay: 30ms;
-}
-
-.output-card:nth-child(2) {
-  animation-delay: 70ms;
-}
-
-.output-card:nth-child(3) {
-  animation-delay: 100ms;
-}
-
-.card-title {
-  font-weight: 700;
-  font-size: 1rem;
-}
-
-.card-subtitle {
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  min-height: 24px;
-  padding: 0 10px;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-
-.status-ok {
-  color: #166534;
-  border-color: rgba(22, 101, 52, 0.28);
-  background: rgba(134, 239, 172, 0.3);
-}
-
-.status-progress {
-  color: #854d0e;
-  border-color: rgba(133, 77, 14, 0.3);
-  background: rgba(253, 224, 71, 0.3);
-}
-
-.status-error {
-  color: #b42318;
-  border-color: rgba(180, 35, 24, 0.35);
-  background: rgba(252, 165, 165, 0.26);
-}
-
-.status-muted {
-  color: #4b5563;
-  border-color: rgba(107, 114, 128, 0.32);
-  background: rgba(229, 231, 235, 0.45);
-}
-
-.status-neutral {
-  color: #6b3841;
-  border-color: rgba(150, 108, 115, 0.35);
-  background: rgba(255, 228, 231, 0.55);
-}
-
-.card-content {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.status-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-}
-
-.polling-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.polling-actions {
-  display: flex;
-  gap: 7px;
-  flex-wrap: wrap;
-}
-
-.meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 9px;
-  min-width: 0;
-}
-
-.mono {
-  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
-  font-size: 0.84rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.warning {
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  color: #b42318;
-  padding: 8px 9px;
-  border-radius: 10px;
-  font-size: 0.82rem;
-}
-
-.raw summary {
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 0.82rem;
-  color: #4d6178;
-}
-
-.raw .body {
-  margin-top: 8px;
-  max-height: 220px;
-}
-
-.entity-list {
-  display: grid;
-  gap: 10px;
-  max-height: 360px;
-  overflow: auto;
-  padding-right: 2px;
-}
-
-.entity-item {
-  border: 1px solid #efccd1;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #ffffff, #fff8f9);
-  padding: 10px;
-  display: grid;
-  gap: 9px;
-  min-width: 0;
-}
-
-.entity-item-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.entity-title {
-  font-size: 0.9rem;
-  font-weight: 700;
-  line-height: 1.25;
-  color: #4f1521;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.entity-meta-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.entity-meta-item {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.entity-meta-key {
-  font-size: 0.68rem;
-  color: #8a5b63;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 700;
-}
-
-.entity-meta-value {
-  font-size: 0.82rem;
-  color: #4d1d25;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ecs-item-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.ecs-item-actions button {
-  flex: 1 1 102px;
-  min-width: 98px;
-  min-height: 34px;
-  padding: 0 8px;
-  font-size: 0.78rem;
-}
-
-.update-state-failed {
-  color: #b42318;
-  font-weight: 700;
-}
-
-.update-state-running {
-  color: #8a5206;
-  font-weight: 700;
-}
-
-.update-progress-hint {
-  display: block;
-  margin-top: 2px;
-  line-height: 1.35;
-  white-space: normal;
-}
-
-.ssh-action.active {
-  border-color: rgba(166, 31, 44, 0.54);
-  color: #a61f2c;
-  background: rgba(166, 31, 44, 0.1);
-}
-
-.dialog-scrim {
-  position: fixed;
-  inset: 0;
-  background: rgba(24, 10, 15, 0.45);
-  backdrop-filter: blur(1.5px);
-  z-index: 140;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-}
-
-.dialog-shell {
-  width: min(560px, calc(100vw - 24px));
-  border-radius: 14px;
-  border: 1px solid #efc1c5;
-  background: linear-gradient(180deg, #fffdfd, #fff4f6);
-  box-shadow: 0 18px 36px rgba(35, 11, 17, 0.24);
-  padding: 14px;
-  display: grid;
-  gap: 12px;
-}
-
-.dialog-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.dialog-head h3 {
-  margin: 0;
-  font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
-  font-size: 1.06rem;
-  color: #5d2029;
-}
-
-.dialog-kind {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 22px;
-  border-radius: 999px;
-  padding: 0 9px;
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  font-weight: 700;
-  border: 1px solid transparent;
-}
-
-.dialog-kind.kind-warning {
-  color: #854d0e;
-  border-color: rgba(133, 77, 14, 0.28);
-  background: rgba(254, 215, 170, 0.4);
-}
-
-.dialog-kind.kind-error {
-  color: #b42318;
-  border-color: rgba(180, 35, 24, 0.32);
-  background: rgba(252, 165, 165, 0.28);
-}
-
-.dialog-kind.kind-info {
-  color: #1e40af;
-  border-color: rgba(30, 64, 175, 0.3);
-  background: rgba(191, 219, 254, 0.38);
-}
-
-.dialog-message {
-  margin: 0;
-  color: #4b1f27;
-  line-height: 1.45;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.fold-enter-active,
-.fold-leave-active {
-  transition: max-height 0.22s ease, opacity 0.18s ease;
-  overflow: hidden;
-}
-
-.fold-enter-from,
-.fold-leave-to {
-  max-height: 0;
-  opacity: 0;
-}
-
-.fold-enter-to,
-.fold-leave-from {
-  max-height: 900px;
-  opacity: 1;
-}
-
-.dialog-enter-active,
-.dialog-leave-active {
-  transition: opacity 0.18s ease;
-}
-
-.dialog-enter-active .dialog-shell,
-.dialog-leave-active .dialog-shell {
-  transition: transform 0.2s ease, opacity 0.2s ease;
-}
-
-.dialog-enter-from,
-.dialog-leave-to {
-  opacity: 0;
-}
-
-.dialog-enter-from .dialog-shell,
-.dialog-leave-to .dialog-shell {
-  transform: translateY(8px);
-  opacity: 0;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 5px 11px;
-  border-radius: 999px;
-  background: rgba(166, 31, 44, 0.14);
-  color: #a61f2c;
-  font-weight: 700;
-  font-size: 0.86rem;
-}
-
-.body {
-  white-space: pre-wrap;
-  background: #0f172a;
-  color: #e2e8f0;
-  border-radius: 12px;
-  padding: 14px;
-  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
-  font-size: 0.82rem;
-  max-height: 260px;
-  overflow: auto;
-}
-
-.error {
-  color: #b42318;
-  background: #fef3f2;
-  border: 1px solid #fecdca;
-  padding: 8px 10px;
-  border-radius: 9px;
-  font-weight: 600;
-  font-size: 0.84rem;
-}
-
-.muted {
-  color: var(--muted);
-}
-
-.tiny {
-  font-size: 0.74rem;
-}
-
-@keyframes panel-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes card-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@media (max-width: 980px) {
-  .page {
-    padding: 16px 12px 30px;
-    gap: 12px;
-  }
-
-  .grid,
-  .actions,
-  .inline-pairs {
-    grid-template-columns: 1fr;
-  }
-
-  .topbar,
-  .service-hero,
-  .field-head,
-  .password-actions,
-  .panel-head {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .cred-grid,
-  .range-row,
-  .output-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .credentials-card {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .quick-create {
-    width: 100%;
-  }
-
-  .fold-head {
-    flex-wrap: wrap;
-    padding-right: 6px;
-  }
-
-  .region-field {
-    max-width: none;
-  }
-
-  .entity-meta-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .ecs-item-actions button {
-    flex-basis: 100%;
-    min-width: 0;
-  }
-
-  .dialog-shell {
-    padding: 12px;
-  }
-
-  .password-input-row {
-    grid-template-columns: 1fr;
-  }
-
-  .meta {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 1200px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-
-  .output {
-    position: static;
-    max-height: none;
-    overflow: visible;
-    padding-right: 0;
-  }
-}
-</style>
+<style src="./styles/app.css"></style>

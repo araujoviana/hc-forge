@@ -71,3 +71,50 @@ pub struct EipListResponse {
     pub request_id: Option<String>,
     pub total_count: Option<u32>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatePublicIpRequest {
+    pub publicip: CreatePublicIpBody,
+    pub bandwidth: CreatePublicIpBandwidth,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatePublicIpBody {
+    #[serde(rename = "type")]
+    pub ip_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatePublicIpBandwidth {
+    pub name: String,
+    pub size: u32,
+    pub share_type: String,
+    pub charge_mode: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CreatePublicIpBandwidth, CreatePublicIpBody, CreatePublicIpRequest};
+
+    #[test]
+    fn create_public_ip_request_serializes_expected_fields() {
+        let payload = CreatePublicIpRequest {
+            publicip: CreatePublicIpBody {
+                ip_type: "5_bgp".to_string(),
+            },
+            bandwidth: CreatePublicIpBandwidth {
+                name: "cce-nat-eip".to_string(),
+                size: 100,
+                share_type: "PER".to_string(),
+                charge_mode: "traffic".to_string(),
+            },
+        };
+
+        let value = serde_json::to_value(payload).expect("serialize create public ip payload");
+        assert_eq!(value["publicip"]["type"], "5_bgp");
+        assert_eq!(value["bandwidth"]["name"], "cce-nat-eip");
+        assert_eq!(value["bandwidth"]["size"], 100);
+        assert_eq!(value["bandwidth"]["share_type"], "PER");
+        assert_eq!(value["bandwidth"]["charge_mode"], "traffic");
+    }
+}

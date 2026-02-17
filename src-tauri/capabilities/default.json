@@ -13,6 +13,7 @@
     "clipboard-manager:default",
     "clipboard-manager:allow-write-text",
     "dialog:default",
-    "notification:default"
+    "notification:default",
+    "fs:default"
   ]
 }

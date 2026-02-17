@@ -1,19 +1,33 @@
 mod api;
+mod validators;
 
+use crate::api::models::cce::{CceClusterListResponse, CceNodePoolListResponse};
 use crate::api::models::eip::EipListResponse;
 use crate::api::models::evs::EvsListResponse;
 use crate::api::models::ims::Image;
+use crate::api::models::nat::NatGatewayListResponse;
+use crate::api::models::obs::{ObsListBucketsResponse, ObsListObjectsResponse};
+use crate::validators::{
+    control_char_from_input, normalize_obs_bucket_name, normalize_obs_object_key,
+    normalize_ssh_session_id,
+};
+use api::models::cce::{
+    CceAuthentication, CceClusterCreateMetadata, CceClusterCreateSpec, CceClusterTag,
+    CceContainerNetwork, CceCreateClusterRequest, CceHostNetwork,
+};
 use api::models::ecs::{
     Bandwidth, CreateEcsRequest, DataVolume, EcsListResponse, Eip, Flavor, Nic, PublicIp,
     RootVolume, Server,
 };
 use api::models::vpc::{Subnet, Vpc};
 use api::{Credentials, CredentialsSource, HwcClient, ImageListFilters, ListParams};
+use base64::Engine;
 use chrono::Utc;
 use log::{error, info, warn};
 use rand::{distr::Alphanumeric, Rng};
 use russh::{client, ChannelMsg, Disconnect};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
@@ -28,6 +42,9 @@ const DEFAULT_BANDWIDTH_CHARGE_MODE: &str = "traffic";
 const DEFAULT_BANDWIDTH_SIZE: u32 = 100;
 const MIN_BANDWIDTH_SIZE: u32 = 1;
 const MAX_BANDWIDTH_SIZE: u32 = 300;
+const OBS_BUCKET_NAME_MIN: usize = 3;
+const OBS_BUCKET_NAME_MAX: usize = 63;
+const OBS_PUT_OBJECT_MAX_BYTES: usize = 5 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +115,139 @@ struct ListParamsInput {
     offset: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsCreateBucketParams {
+    region: String,
+    bucket_name: String,
+    default_storage_class: Option<String>,
+    acl: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsDeleteBucketParams {
+    region: String,
+    bucket_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsListObjectsParams {
+    region: String,
+    bucket_name: String,
+    prefix: Option<String>,
+    marker: Option<String>,
+    max_keys: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsPutObjectParams {
+    region: String,
+    bucket_name: String,
+    object_key: String,
+    content_base64: String,
+    content_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsDeleteObjectParams {
+    region: String,
+    bucket_name: String,
+    object_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsGetObjectParams {
+    region: String,
+    bucket_name: String,
+    object_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceCreateClusterParams {
+    region: String,
+    name: String,
+    flavor: String,
+    version: String,
+    vpc_id: String,
+    subnet_id: String,
+    description: Option<String>,
+    cluster_type: Option<String>,
+    container_network_mode: Option<String>,
+    container_network_cidr: Option<String>,
+    kubernetes_svc_ip_range: Option<String>,
+    authentication_mode: Option<String>,
+    cluster_tag_env: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceDeleteClusterParams {
+    region: String,
+    cluster_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceListNodePoolsParams {
+    region: String,
+    cluster_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceGetJobParams {
+    region: String,
+    job_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceListNatGatewaysParams {
+    region: String,
+    vpc_id: String,
+    subnet_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceCreateNatGatewayParams {
+    region: String,
+    name: String,
+    vpc_id: String,
+    subnet_id: String,
+    description: Option<String>,
+    spec: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceDeleteNatGatewayParams {
+    region: String,
+    nat_gateway_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceBindClusterApiEipParams {
+    region: String,
+    cluster_id: String,
+    eip_address: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceDownloadKubeconfigParams {
+    region: String,
+    cluster_id: String,
+    context: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct CreateEcsResult {
     status: String,
@@ -121,6 +271,37 @@ struct DeleteEcsResult {
 #[derive(Debug, Serialize)]
 struct StopEcsResult {
     ecs: DeleteOperationResult,
+}
+
+#[derive(Debug, Serialize)]
+struct ObsOperationResult {
+    status: String,
+    status_code: u16,
+    body: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ObsGetObjectResult {
+    status: String,
+    status_code: u16,
+    content_base64: Option<String>,
+    content_type: Option<String>,
+    body: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CceOperationResult {
+    status: String,
+    status_code: u16,
+    body: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CceKubeconfigResult {
+    status: String,
+    status_code: u16,
+    body: String,
+    kubeconfig: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -323,6 +504,110 @@ fn operation_error_result(status: &str, body: String) -> DeleteOperationResult {
     }
 }
 
+fn obs_operation_result(status: reqwest::StatusCode, body: String) -> ObsOperationResult {
+    ObsOperationResult {
+        status: status.to_string(),
+        status_code: status.as_u16(),
+        body,
+    }
+}
+
+fn cce_operation_result(status: reqwest::StatusCode, body: String) -> CceOperationResult {
+    CceOperationResult {
+        status: status.to_string(),
+        status_code: status.as_u16(),
+        body,
+    }
+}
+
+fn parse_json_or_string(raw: &str) -> Value {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Value::String(String::new())
+    } else {
+        serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(trimmed.to_string()))
+    }
+}
+
+fn extract_nat_gateway_id(raw_body: &str) -> Option<String> {
+    let payload: Value = serde_json::from_str(raw_body).ok()?;
+    payload
+        .get("nat_gateway")
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_eip_id_and_address(raw_body: &str) -> (Option<String>, Option<String>) {
+    let payload: Value = match serde_json::from_str(raw_body) {
+        Ok(value) => value,
+        Err(_) => return (None, None),
+    };
+    let publicip = payload.get("publicip");
+    let id = publicip
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let address = publicip
+        .and_then(|item| {
+            item.get("public_ip_address")
+                .or_else(|| item.get("public_ip"))
+        })
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    (id, address)
+}
+
+fn extract_cluster_kubeconfig(raw_body: &str) -> Option<String> {
+    let trimmed = raw_body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let payload: Value = match serde_json::from_str(trimmed) {
+        Ok(value) => value,
+        Err(_) => return Some(trimmed.to_string()),
+    };
+    if let Some(value) = payload
+        .get("kubeconfig")
+        .or_else(|| payload.get("kube_config"))
+        .or_else(|| payload.get("kubeConfig"))
+        .or_else(|| payload.get("config"))
+        .and_then(Value::as_str)
+    {
+        let text = value.trim();
+        if !text.is_empty() {
+            return Some(text.to_string());
+        }
+    }
+    if let Some(certs) = payload.get("certs") {
+        if let Some(value) = certs
+            .get("kubeconfig")
+            .or_else(|| certs.get("kube_config"))
+            .or_else(|| certs.get("kubeConfig"))
+            .or_else(|| certs.get("config"))
+            .and_then(Value::as_str)
+        {
+            let text = value.trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    if payload.get("clusters").is_some()
+        && payload.get("contexts").is_some()
+        && payload.get("users").is_some()
+    {
+        return serde_json::to_string_pretty(&payload).ok();
+    }
+    None
+}
+
 /// List VPCs for the given region so the UI can populate a dropdown.
 #[tauri::command]
 async fn list_vpcs(
@@ -516,6 +801,936 @@ async fn list_evss(
         error!("Failed to list EVS disks: region={} error={}", region, err);
         err.to_string()
     })
+}
+
+/// List CCE clusters for the selected region.
+#[tauri::command]
+async fn list_cce_clusters(
+    region: String,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceClusterListResponse, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Listing CCE clusters: source={} region={}",
+        source_label, region
+    );
+
+    let client = HwcClient::new(credentials);
+    client.list_cce_clusters(&region).await.map_err(|err| {
+        error!(
+            "Failed to list CCE clusters: region={} error={}",
+            region, err
+        );
+        err.to_string()
+    })
+}
+
+/// Create one CCE cluster.
+#[tauri::command]
+async fn create_cce_cluster(
+    params: CceCreateClusterParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let cluster_name = params.name.trim();
+    if cluster_name.is_empty() {
+        return Err("CCE cluster name is required.".to_string());
+    }
+    let flavor = params.flavor.trim();
+    if flavor.is_empty() {
+        return Err("CCE cluster flavor is required.".to_string());
+    }
+    let version = params.version.trim();
+    if version.is_empty() {
+        return Err("CCE Kubernetes version is required.".to_string());
+    }
+    let vpc_id = params.vpc_id.trim();
+    if vpc_id.is_empty() {
+        return Err("CCE VPC is required.".to_string());
+    }
+    let subnet_id = params.subnet_id.trim();
+    if subnet_id.is_empty() {
+        return Err("CCE subnet is required.".to_string());
+    }
+
+    let cluster_type = params
+        .cluster_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("VirtualMachine")
+        .to_string();
+    let container_network_mode = params
+        .container_network_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("overlay_l2")
+        .to_string();
+    let container_network_cidr = params
+        .container_network_cidr
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("172.16.0.0/16")
+        .to_string();
+    let kubernetes_svc_ip_range = params
+        .kubernetes_svc_ip_range
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("10.247.0.0/16")
+        .to_string();
+    let authentication_mode = params
+        .authentication_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("rbac")
+        .to_string();
+
+    let mut cluster_tags = Vec::new();
+    if let Some(env) = params
+        .cluster_tag_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        cluster_tags.push(CceClusterTag {
+            key: "env".to_string(),
+            value: env.to_string(),
+        });
+    }
+
+    let body = CceCreateClusterRequest {
+        kind: "Cluster".to_string(),
+        api_version: "v3".to_string(),
+        metadata: CceClusterCreateMetadata {
+            name: cluster_name.to_string(),
+        },
+        spec: CceClusterCreateSpec {
+            cluster_type,
+            flavor: flavor.to_string(),
+            version: version.to_string(),
+            description: params
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            host_network: CceHostNetwork {
+                vpc: vpc_id.to_string(),
+                subnet: subnet_id.to_string(),
+            },
+            container_network: CceContainerNetwork {
+                mode: container_network_mode,
+                cidr: container_network_cidr,
+            },
+            kubernetes_svc_ip_range,
+            authentication: Some(CceAuthentication {
+                mode: authentication_mode,
+            }),
+            cluster_tags,
+        },
+    };
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Creating CCE cluster: source={} region={} name={} flavor={} version={} vpc_id={} subnet_id={}",
+        source_label, params.region, cluster_name, flavor, version, vpc_id, subnet_id
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .create_cce_cluster(&params.region, &body)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to create CCE cluster: region={} name={} error={}",
+                params.region, cluster_name, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(cce_operation_result(status, body))
+}
+
+/// Delete one CCE cluster.
+#[tauri::command]
+async fn delete_cce_cluster(
+    params: CceDeleteClusterParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let cluster_id = params.cluster_id.trim();
+    if cluster_id.is_empty() {
+        return Err("CCE cluster ID is required.".to_string());
+    }
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Deleting CCE cluster: source={} region={} cluster_id={}",
+        source_label, params.region, cluster_id
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .delete_cce_cluster(&params.region, cluster_id)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to delete CCE cluster: region={} cluster_id={} error={}",
+                params.region, cluster_id, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(cce_operation_result(status, body))
+}
+
+/// List node pools for one CCE cluster.
+#[tauri::command]
+async fn list_cce_node_pools(
+    params: CceListNodePoolsParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceNodePoolListResponse, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let cluster_id = params.cluster_id.trim();
+    if cluster_id.is_empty() {
+        return Err("CCE cluster ID is required.".to_string());
+    }
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Listing CCE node pools: source={} region={} cluster_id={}",
+        source_label, params.region, cluster_id
+    );
+
+    let client = HwcClient::new(credentials);
+    client
+        .list_cce_node_pools(&params.region, cluster_id)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to list CCE node pools: region={} cluster_id={} error={}",
+                params.region, cluster_id, err
+            );
+            err.to_string()
+        })
+}
+
+/// Query one CCE job status.
+#[tauri::command]
+async fn get_cce_job(
+    params: CceGetJobParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let job_id = params.job_id.trim();
+    if job_id.is_empty() {
+        return Err("CCE job ID is required.".to_string());
+    }
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Querying CCE job: source={} region={} job_id={}",
+        source_label, params.region, job_id
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .get_cce_job(&params.region, job_id)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to query CCE job: region={} job_id={} error={}",
+                params.region, job_id, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(cce_operation_result(status, body))
+}
+
+/// List NAT gateways scoped to the selected CCE VPC/subnet.
+#[tauri::command]
+async fn list_cce_nat_gateways(
+    params: CceListNatGatewaysParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<NatGatewayListResponse, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let vpc_id = params.vpc_id.trim();
+    if vpc_id.is_empty() {
+        return Err("CCE NAT requires a VPC.".to_string());
+    }
+    let subnet_id = params.subnet_id.trim();
+    if subnet_id.is_empty() {
+        return Err("CCE NAT requires a subnet.".to_string());
+    }
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Listing CCE NAT gateways: source={} region={} vpc_id={} subnet_id={}",
+        source_label, params.region, vpc_id, subnet_id
+    );
+
+    let client = HwcClient::new(credentials);
+    client
+        .list_nat_gateways(&params.region, Some(vpc_id), Some(subnet_id))
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to list CCE NAT gateways: region={} vpc_id={} subnet_id={} error={}",
+                params.region, vpc_id, subnet_id, err
+            );
+            err.to_string()
+        })
+}
+
+/// Create one NAT gateway for the selected CCE VPC/subnet.
+#[tauri::command]
+async fn create_cce_nat_gateway(
+    params: CceCreateNatGatewayParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let name = params.name.trim();
+    if name.is_empty() {
+        return Err("CCE NAT gateway name is required.".to_string());
+    }
+    let vpc_id = params.vpc_id.trim();
+    if vpc_id.is_empty() {
+        return Err("CCE NAT requires a VPC.".to_string());
+    }
+    let subnet_id = params.subnet_id.trim();
+    if subnet_id.is_empty() {
+        return Err("CCE NAT requires a subnet.".to_string());
+    }
+    let spec = params
+        .spec
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("1");
+    if spec != "1" {
+        return Err("Unsupported NAT gateway spec. Use spec 1.".to_string());
+    }
+
+    let description = params
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Creating CCE NAT gateway with EIP+SNAT bootstrap: source={} region={} name={} vpc_id={} subnet_id={} spec={}",
+        source_label, params.region, name, vpc_id, subnet_id, spec
+    );
+
+    let client = HwcClient::new(credentials);
+    let (nat_status, nat_body) = client
+        .create_nat_gateway(&params.region, name, description, spec, vpc_id, subnet_id)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to create CCE NAT gateway: region={} name={} error={}",
+                params.region, name, err
+            );
+            err.to_string()
+        })?;
+    let mut summary = json!({
+        "requested": {
+            "region": params.region,
+            "name": name,
+            "vpc_id": vpc_id,
+            "subnet_id": subnet_id,
+            "spec": spec,
+            "auto_bind_eip": true,
+            "auto_create_snat": true
+        },
+        "nat_gateway": {
+            "status": nat_status.to_string(),
+            "status_code": nat_status.as_u16(),
+            "body": parse_json_or_string(&nat_body)
+        }
+    });
+
+    if !nat_status.is_success() {
+        let body = serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string());
+        return Ok(cce_operation_result(nat_status, body));
+    }
+
+    let nat_gateway_id = match extract_nat_gateway_id(&nat_body) {
+        Some(value) => value,
+        None => {
+            summary["error"] =
+                json!("NAT gateway create succeeded but response did not contain nat_gateway.id.");
+            let body =
+                serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string());
+            return Ok(cce_operation_result(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                body,
+            ));
+        }
+    };
+    summary["nat_gateway"]["id"] = json!(nat_gateway_id.clone());
+
+    let mut last_nat_status = String::new();
+    for attempt in 1..=8 {
+        match client
+            .get_nat_gateway(&params.region, &nat_gateway_id)
+            .await
+        {
+            Ok(response) => {
+                let status_text = response
+                    .nat_gateway
+                    .status
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("");
+                if !status_text.is_empty() {
+                    last_nat_status = status_text.to_string();
+                }
+                if status_text.eq_ignore_ascii_case("ACTIVE") {
+                    summary["nat_gateway"]["ready_status"] = json!(status_text);
+                    summary["nat_gateway"]["ready_attempt"] = json!(attempt);
+                    break;
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "Failed to poll NAT gateway status after create: region={} nat_gateway_id={} error={}",
+                    params.region, nat_gateway_id, err
+                );
+            }
+        }
+        if attempt < 8 {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
+    }
+    if !last_nat_status.is_empty() {
+        summary["nat_gateway"]["last_observed_status"] = json!(last_nat_status);
+    }
+
+    let eip_name = format!("{}-eip", name);
+    let (eip_status, eip_body) = client
+        .create_eip(&params.region, DEFAULT_BANDWIDTH_SIZE, Some(&eip_name))
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to create EIP for CCE NAT bootstrap: region={} nat_gateway_id={} error={}",
+                params.region, nat_gateway_id, err
+            );
+            err.to_string()
+        })?;
+    summary["eip"] = json!({
+        "status": eip_status.to_string(),
+        "status_code": eip_status.as_u16(),
+        "body": parse_json_or_string(&eip_body)
+    });
+
+    if !eip_status.is_success() {
+        let body = serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string());
+        return Ok(cce_operation_result(eip_status, body));
+    }
+
+    let (eip_id, eip_address) = extract_eip_id_and_address(&eip_body);
+    let eip_id = match eip_id {
+        Some(value) => value,
+        None => {
+            summary["error"] =
+                json!("EIP create succeeded but response did not contain publicip.id.");
+            let body =
+                serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string());
+            return Ok(cce_operation_result(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                body,
+            ));
+        }
+    };
+    summary["eip"]["id"] = json!(eip_id.clone());
+    if let Some(address) = eip_address {
+        summary["eip"]["address"] = json!(address);
+    }
+
+    let (snat_status, snat_body) = client
+        .create_snat_rule(&params.region, &nat_gateway_id, subnet_id, &eip_id)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to create SNAT rule for CCE NAT bootstrap: region={} nat_gateway_id={} eip_id={} error={}",
+                params.region, nat_gateway_id, eip_id, err
+            );
+            err.to_string()
+        })?;
+    summary["snat_rule"] = json!({
+        "status": snat_status.to_string(),
+        "status_code": snat_status.as_u16(),
+        "body": parse_json_or_string(&snat_body)
+    });
+
+    let body = serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string());
+    Ok(cce_operation_result(snat_status, body))
+}
+
+/// Delete one NAT gateway by ID.
+#[tauri::command]
+async fn delete_cce_nat_gateway(
+    params: CceDeleteNatGatewayParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let nat_gateway_id = params.nat_gateway_id.trim();
+    if nat_gateway_id.is_empty() {
+        return Err("CCE NAT gateway ID is required.".to_string());
+    }
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Deleting CCE NAT gateway: source={} region={} nat_gateway_id={}",
+        source_label, params.region, nat_gateway_id
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .delete_nat_gateway(&params.region, nat_gateway_id)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to delete CCE NAT gateway: region={} nat_gateway_id={} error={}",
+                params.region, nat_gateway_id, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(cce_operation_result(status, body))
+}
+
+/// Bind a public EIP to one CCE cluster API endpoint for remote kubeconfig access.
+#[tauri::command]
+async fn bind_cce_cluster_api_eip(
+    params: CceBindClusterApiEipParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let cluster_id = params.cluster_id.trim();
+    if cluster_id.is_empty() {
+        return Err("CCE cluster ID is required.".to_string());
+    }
+    let eip_address = params.eip_address.trim();
+    if eip_address.is_empty() {
+        return Err("CCE API EIP address is required.".to_string());
+    }
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Binding CCE cluster API EIP: source={} region={} cluster_id={} eip_address={}",
+        source_label, params.region, cluster_id, eip_address
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .update_cce_cluster_external_ip(&params.region, cluster_id, eip_address)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to bind CCE cluster API EIP: region={} cluster_id={} eip_address={} error={}",
+                params.region, cluster_id, eip_address, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(cce_operation_result(status, body))
+}
+
+/// Request cluster kubeconfig payload (clustercert API) for local kubectl access.
+#[tauri::command]
+async fn get_cce_cluster_kubeconfig(
+    params: CceDownloadKubeconfigParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceKubeconfigResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let cluster_id = params.cluster_id.trim();
+    if cluster_id.is_empty() {
+        return Err("CCE cluster ID is required.".to_string());
+    }
+
+    let context = params
+        .context
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("external");
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Requesting CCE cluster kubeconfig: source={} region={} cluster_id={} context={}",
+        source_label, params.region, cluster_id, context
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .get_cce_cluster_kubeconfig(&params.region, cluster_id, Some(context))
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to request CCE cluster kubeconfig: region={} cluster_id={} error={}",
+                params.region, cluster_id, err
+            );
+            err.to_string()
+        })?;
+    let kubeconfig = if status.is_success() {
+        extract_cluster_kubeconfig(&body)
+    } else {
+        None
+    };
+
+    Ok(CceKubeconfigResult {
+        status: status.to_string(),
+        status_code: status.as_u16(),
+        body,
+        kubeconfig,
+    })
+}
+
+/// List OBS buckets for the selected region.
+#[tauri::command]
+async fn list_obs_buckets(
+    region: String,
+    credentials: Option<CredentialsInput>,
+) -> Result<ObsListBucketsResponse, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Listing OBS buckets: source={} region={}",
+        source_label, region
+    );
+
+    let client = HwcClient::new(credentials);
+    client.list_obs_buckets(&region).await.map_err(|err| {
+        error!(
+            "Failed to list OBS buckets: region={} error={}",
+            region, err
+        );
+        err.to_string()
+    })
+}
+
+/// Create one OBS bucket.
+#[tauri::command]
+async fn create_obs_bucket(
+    params: ObsCreateBucketParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<ObsOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let bucket_name = normalize_obs_bucket_name(
+        &params.bucket_name,
+        OBS_BUCKET_NAME_MIN,
+        OBS_BUCKET_NAME_MAX,
+    )?;
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Creating OBS bucket: source={} region={} bucket={}",
+        source_label, params.region, bucket_name
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .create_obs_bucket(
+            &params.region,
+            &bucket_name,
+            params.default_storage_class.as_deref(),
+            params.acl.as_deref(),
+        )
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to create OBS bucket: region={} bucket={} error={}",
+                params.region, bucket_name, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(obs_operation_result(status, body))
+}
+
+/// Delete one OBS bucket.
+#[tauri::command]
+async fn delete_obs_bucket(
+    params: ObsDeleteBucketParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<ObsOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let bucket_name = normalize_obs_bucket_name(
+        &params.bucket_name,
+        OBS_BUCKET_NAME_MIN,
+        OBS_BUCKET_NAME_MAX,
+    )?;
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Deleting OBS bucket: source={} region={} bucket={}",
+        source_label, params.region, bucket_name
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .delete_obs_bucket(&params.region, &bucket_name)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to delete OBS bucket: region={} bucket={} error={}",
+                params.region, bucket_name, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(obs_operation_result(status, body))
+}
+
+/// List objects for one OBS bucket.
+#[tauri::command]
+async fn list_obs_objects(
+    params: ObsListObjectsParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<ObsListObjectsResponse, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let bucket_name = normalize_obs_bucket_name(
+        &params.bucket_name,
+        OBS_BUCKET_NAME_MIN,
+        OBS_BUCKET_NAME_MAX,
+    )?;
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Listing OBS objects: source={} region={} bucket={}",
+        source_label, params.region, bucket_name
+    );
+
+    let client = HwcClient::new(credentials);
+    client
+        .list_obs_objects(
+            &params.region,
+            &bucket_name,
+            params.prefix.as_deref(),
+            params.marker.as_deref(),
+            params.max_keys,
+        )
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to list OBS objects: region={} bucket={} error={}",
+                params.region, bucket_name, err
+            );
+            err.to_string()
+        })
+}
+
+/// Upload one object to OBS.
+#[tauri::command]
+async fn put_obs_object(
+    params: ObsPutObjectParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<ObsOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let bucket_name = normalize_obs_bucket_name(
+        &params.bucket_name,
+        OBS_BUCKET_NAME_MIN,
+        OBS_BUCKET_NAME_MAX,
+    )?;
+    let object_key = normalize_obs_object_key(&params.object_key)?;
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Uploading OBS object: source={} region={} bucket={} key={}",
+        source_label, params.region, bucket_name, object_key
+    );
+
+    let content = base64::engine::general_purpose::STANDARD
+        .decode(params.content_base64.trim())
+        .map_err(|err| format!("Failed to decode base64 object payload: {}", err))?;
+    if content.is_empty() {
+        return Err("OBS upload payload is empty.".to_string());
+    }
+    if content.len() > OBS_PUT_OBJECT_MAX_BYTES {
+        return Err(format!(
+            "OBS PutObject supports up to {} bytes (5 GB). Use multipart upload for larger files.",
+            OBS_PUT_OBJECT_MAX_BYTES
+        ));
+    }
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .put_obs_object(
+            &params.region,
+            &bucket_name,
+            &object_key,
+            content,
+            params.content_type.as_deref(),
+        )
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to upload OBS object: region={} bucket={} key={} error={}",
+                params.region, bucket_name, object_key, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(obs_operation_result(status, body))
+}
+
+/// Download one object from OBS.
+#[tauri::command]
+async fn get_obs_object(
+    params: ObsGetObjectParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<ObsGetObjectResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let bucket_name = normalize_obs_bucket_name(
+        &params.bucket_name,
+        OBS_BUCKET_NAME_MIN,
+        OBS_BUCKET_NAME_MAX,
+    )?;
+    let object_key = normalize_obs_object_key(&params.object_key)?;
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Downloading OBS object: source={} region={} bucket={} key={}",
+        source_label, params.region, bucket_name, object_key
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, content, content_type) = client
+        .get_obs_object(&params.region, &bucket_name, &object_key)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to download OBS object: region={} bucket={} key={} error={}",
+                params.region, bucket_name, object_key, err
+            );
+            err.to_string()
+        })?;
+
+    let status_code = status.as_u16();
+    let success = status.is_success();
+    let body = if success {
+        None
+    } else {
+        Some(String::from_utf8_lossy(&content).into_owned())
+    };
+
+    Ok(ObsGetObjectResult {
+        status: status.to_string(),
+        status_code,
+        content_base64: if success {
+            Some(base64::engine::general_purpose::STANDARD.encode(content))
+        } else {
+            None
+        },
+        content_type,
+        body,
+    })
+}
+
+/// Delete one object from OBS.
+#[tauri::command]
+async fn delete_obs_object(
+    params: ObsDeleteObjectParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<ObsOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let bucket_name = normalize_obs_bucket_name(
+        &params.bucket_name,
+        OBS_BUCKET_NAME_MIN,
+        OBS_BUCKET_NAME_MAX,
+    )?;
+    let object_key = normalize_obs_object_key(&params.object_key)?;
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Deleting OBS object: source={} region={} bucket={} key={}",
+        source_label, params.region, bucket_name, object_key
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .delete_obs_object(&params.region, &bucket_name, &object_key)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to delete OBS object: region={} bucket={} key={} error={}",
+                params.region, bucket_name, object_key, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(obs_operation_result(status, body))
 }
 
 /// Create an ECS instance using the same core flow as the old CLI.
@@ -756,27 +1971,6 @@ fn lock_ssh_sessions<'a>(
         .sessions
         .lock()
         .map_err(|_| "SSH session store is unavailable.".to_string())
-}
-
-fn normalize_ssh_session_id(input: &str) -> Result<String, String> {
-    let session_id = input.trim();
-    if session_id.is_empty() {
-        return Err("SSH session ID is required.".to_string());
-    }
-    Ok(session_id.to_string())
-}
-
-fn control_char_from_input(input: &str) -> Result<u8, String> {
-    let normalized = input.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "c" | "ctrl+c" => Ok(0x03),
-        "d" | "ctrl+d" => Ok(0x04),
-        "u" | "ctrl+u" => Ok(0x15),
-        _ => Err(format!(
-            "Unsupported control sequence '{}'. Use Ctrl+C, Ctrl+D, or Ctrl+U.",
-            input.trim()
-        )),
-    }
 }
 
 fn emit_ssh_event(app_handle: &tauri::AppHandle, session_id: &str, kind: &str, text: &str) {
@@ -1194,7 +2388,6 @@ async fn ssh_exec_one_shot(
             }
             ChannelMsg::Eof => {
                 emit_ssh_event(&app_handle, &session_id, "meta", "Remote command sent EOF.");
-                break;
             }
             ChannelMsg::Close => {
                 emit_ssh_event(
@@ -1203,7 +2396,6 @@ async fn ssh_exec_one_shot(
                     "meta",
                     "Remote command channel closed.",
                 );
-                break;
             }
             _ => {}
         }
@@ -1274,6 +2466,7 @@ async fn ssh_disconnect(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -1293,6 +2486,23 @@ pub fn run() {
             list_eips,
             list_ecses,
             list_evss,
+            list_cce_clusters,
+            create_cce_cluster,
+            delete_cce_cluster,
+            list_cce_node_pools,
+            get_cce_job,
+            list_cce_nat_gateways,
+            create_cce_nat_gateway,
+            delete_cce_nat_gateway,
+            bind_cce_cluster_api_eip,
+            get_cce_cluster_kubeconfig,
+            list_obs_buckets,
+            create_obs_bucket,
+            delete_obs_bucket,
+            list_obs_objects,
+            put_obs_object,
+            get_obs_object,
+            delete_obs_object,
             create_ecs,
             delete_ecs_with_eip,
             stop_ecs,
@@ -1309,7 +2519,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_server_name, RANDOM_NAME_PLACEHOLDER};
+    use super::{
+        extract_cluster_kubeconfig, extract_eip_id_and_address, extract_nat_gateway_id,
+        normalize_server_name, RANDOM_NAME_PLACEHOLDER,
+    };
 
     #[test]
     fn normalize_server_name_keeps_custom_value() {
@@ -1324,5 +2537,37 @@ mod tests {
         assert!(from_placeholder.starts_with("ecs-"));
         assert!(from_blank.starts_with("ecs-"));
         assert_ne!(from_placeholder, from_blank);
+    }
+
+    #[test]
+    fn extract_nat_gateway_id_reads_nested_payload() {
+        let raw = r#"{"nat_gateway":{"id":"nat-123","name":"cce-nat"}}"#;
+        assert_eq!(extract_nat_gateway_id(raw).as_deref(), Some("nat-123"));
+    }
+
+    #[test]
+    fn extract_eip_id_and_address_reads_publicip_payload() {
+        let raw = r#"{"publicip":{"id":"eip-123","public_ip_address":"1.2.3.4"}}"#;
+        let (id, address) = extract_eip_id_and_address(raw);
+        assert_eq!(id.as_deref(), Some("eip-123"));
+        assert_eq!(address.as_deref(), Some("1.2.3.4"));
+    }
+
+    #[test]
+    fn extract_cluster_kubeconfig_reads_common_fields() {
+        let raw = r#"{"kubeconfig":"apiVersion: v1\nclusters: []"}"#;
+        assert_eq!(
+            extract_cluster_kubeconfig(raw).as_deref(),
+            Some("apiVersion: v1\nclusters: []")
+        );
+    }
+
+    #[test]
+    fn extract_cluster_kubeconfig_reads_nested_certs_fields() {
+        let raw = r#"{"certs":{"kube_config":"apiVersion: v1\nclusters: []"}}"#;
+        assert_eq!(
+            extract_cluster_kubeconfig(raw).as_deref(),
+            Some("apiVersion: v1\nclusters: []")
+        );
     }
 }

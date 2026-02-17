@@ -11,7 +11,7 @@ Desktop Cloud Ops console for Huawei Cloud ECS workflows, built with Tauri + Vue
 - Includes integrated SSH terminal controls (interactive shell + Ctrl+C/Ctrl+D/Ctrl+U shortcuts).
 - Supports startup task automation for newly created VMs:
   - `Update VM on startup`
-  - `Setup GUI + RDP on startup` (installs IceWM + XRDP stack using detected package manager)
+  - `Setup GUI + RDP on startup` (installs XFCE + XRDP stack using detected package manager)
 - Streams startup task progress into UI/logs, including percent markers.
 - Sends desktop notifications when:
   - ECS create request succeeds.

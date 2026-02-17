@@ -101,4 +101,34 @@ mod tests {
         assert_eq!(body.count, Some(2));
         assert!(body.volumes.is_empty());
     }
+
+    #[test]
+    fn evs_volume_deserializes_yes_no_booleans() {
+        let raw = r#"{
+          "id": "vol-2",
+          "bootable": "yes",
+          "multiattach": "no"
+        }"#;
+
+        let volume: EvsVolume = serde_json::from_str(raw).expect("deserialize evs volume");
+        assert_eq!(volume.id.as_deref(), Some("vol-2"));
+        assert_eq!(volume.bootable, Some(true));
+        assert_eq!(volume.multiattach, Some(false));
+    }
+
+    #[test]
+    fn evs_volume_ignores_invalid_numeric_and_boolean_values() {
+        let raw = r#"{
+          "id": "vol-3",
+          "size": "not-a-number",
+          "bootable": "maybe",
+          "multiattach": {}
+        }"#;
+
+        let volume: EvsVolume = serde_json::from_str(raw).expect("deserialize evs volume");
+        assert_eq!(volume.id.as_deref(), Some("vol-3"));
+        assert_eq!(volume.size, None);
+        assert_eq!(volume.bootable, None);
+        assert_eq!(volume.multiattach, None);
+    }
 }

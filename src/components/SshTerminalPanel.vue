@@ -37,8 +37,7 @@ const emit = defineEmits<{
   (event: "update:commandInput", value: string): void;
 }>();
 
-const authOpen = ref(false);
-const connectionOpen = ref(false);
+const settingsOpen = ref(false);
 const terminalRef = ref<HTMLElement | null>(null);
 let resizeObserver: ResizeObserver | null = null;
 let lastCols = 0;
@@ -51,6 +50,15 @@ const connectLabel = computed(() => {
   return props.connected ? "Reconnect" : "Connect";
 });
 
+const quickCommands = [
+  "uptime",
+  "free -h",
+  "df -h /",
+  "systemctl --failed --no-pager",
+  "journalctl -p 3 -n 40 --no-pager",
+  "last -n 10",
+];
+
 watch(
   () => props.open,
   async (open) => {
@@ -58,8 +66,7 @@ watch(
     if (!open) {
       return;
     }
-    authOpen.value = false;
-    connectionOpen.value = false;
+    settingsOpen.value = false;
     await nextTick();
     setupResizeObserver();
     emitTerminalResize();
@@ -101,6 +108,11 @@ function onCommandKeydown(event: KeyboardEvent) {
 
 function emitControlShortcut(control: "ctrl+c" | "ctrl+d" | "ctrl+u") {
   emit("send-control", control);
+}
+
+function applyQuickCommand(command: string) {
+  emit("update:commandInput", command);
+  emit("run");
 }
 
 function setupResizeObserver() {
@@ -161,14 +173,15 @@ function emitTerminalResize() {
       <span class="muted tiny">Session: <span class="mono">{{ connected ? "Connected" : "Disconnected" }}</span></span>
     </div>
 
-    <div class="ssh-fold-grid">
-      <div class="ssh-fold">
-        <button class="ssh-fold-toggle" type="button" @click="authOpen = !authOpen">
-          <span>Auth</span>
-          <span class="fold-state">{{ authOpen ? "Hide" : "Show" }}</span>
-        </button>
-        <transition name="fold">
-          <div v-show="authOpen" class="ssh-fold-body">
+    <div class="ssh-fold">
+      <button class="ssh-fold-toggle" type="button" @click="settingsOpen = !settingsOpen">
+        <span>Auth + Connection</span>
+        <span class="fold-state">{{ settingsOpen ? "Hide" : "Show" }}</span>
+      </button>
+      <transition name="fold">
+        <div v-show="settingsOpen" class="ssh-fold-body ssh-settings-grid">
+          <section class="ssh-settings-pane">
+            <div class="ssh-pane-title">Auth</div>
             <label class="toggle-inline">
               <input :checked="useFormPassword" type="checkbox" @change="updateUseFormPassword" />
               <span>Use admin password from form</span>
@@ -181,17 +194,9 @@ function emitTerminalResize() {
               :disabled="useFormPassword"
               @input="updateManualPassword"
             />
-          </div>
-        </transition>
-      </div>
-
-      <div class="ssh-fold">
-        <button class="ssh-fold-toggle" type="button" @click="connectionOpen = !connectionOpen">
-          <span>Connection</span>
-          <span class="fold-state">{{ connectionOpen ? "Hide" : "Show" }}</span>
-        </button>
-        <transition name="fold">
-          <div v-show="connectionOpen" class="ssh-fold-body">
+          </section>
+          <section class="ssh-settings-pane">
+            <div class="ssh-pane-title">Connection</div>
             <div class="ssh-connect-actions">
               <button
                 class="ghost minor"
@@ -210,9 +215,9 @@ function emitTerminalResize() {
                 {{ busy && connected ? "Disconnecting..." : "Disconnect" }}
               </button>
             </div>
-          </div>
-        </transition>
-      </div>
+          </section>
+        </div>
+      </transition>
     </div>
 
     <div ref="terminalRef" class="ssh-terminal" role="log" aria-live="polite">
@@ -268,6 +273,23 @@ function emitTerminalResize() {
         </div>
       </div>
       <button class="primary" type="button" :disabled="!canRun" @click="$emit('run')">Run</button>
+    </div>
+
+    <div class="ssh-help-row">
+      <span class="muted tiny">Enter runs command • Quick buttons run immediately • Ctrl+L clears terminal</span>
+      <div class="ssh-quick-actions">
+        <button
+          v-for="command in quickCommands"
+          :key="command"
+          class="ghost minor quick-chip"
+          type="button"
+          :disabled="!connected || running"
+          :title="`Use: ${command}`"
+          @click="applyQuickCommand(command)"
+        >
+          {{ command }}
+        </button>
+      </div>
     </div>
   </section>
 </template>
@@ -348,12 +370,6 @@ function emitTerminalResize() {
   border: 1px solid #efc1c5;
 }
 
-.ssh-fold-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
 .ssh-fold {
   border: 1px solid #efc1c5;
   border-radius: 10px;
@@ -387,6 +403,31 @@ function emitTerminalResize() {
   display: grid;
   gap: 8px;
   padding: 9px;
+}
+
+.ssh-settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  padding: 0;
+}
+
+.ssh-settings-pane {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  min-width: 0;
+}
+
+.ssh-settings-pane + .ssh-settings-pane {
+  border-left: 1px solid #efc1c5;
+}
+
+.ssh-pane-title {
+  font-size: 0.68rem;
+  color: #8d5a62;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  font-weight: 700;
 }
 
 .toggle-inline {
@@ -451,7 +492,18 @@ function emitTerminalResize() {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 110px;
   gap: 8px;
-  align-items: end;
+  align-items: start;
+}
+
+.ssh-help-row {
+  display: grid;
+  gap: 6px;
+}
+
+.ssh-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .ssh-command-input-wrap {
@@ -488,6 +540,13 @@ function emitTerminalResize() {
   letter-spacing: 0.01em;
 }
 
+.quick-chip {
+  min-height: 29px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
 .primary {
   min-height: 40px;
   border: 1px solid #bb2d37;
@@ -496,6 +555,7 @@ function emitTerminalResize() {
   color: #fff;
   font-size: 0.84rem;
   font-weight: 700;
+  align-self: start;
 }
 
 .mono {
@@ -529,8 +589,13 @@ function emitTerminalResize() {
 }
 
 @media (max-width: 1100px) {
-  .ssh-fold-grid {
+  .ssh-settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ssh-settings-pane + .ssh-settings-pane {
+    border-left: 0;
+    border-top: 1px solid #efc1c5;
   }
 
   .ssh-command-row {

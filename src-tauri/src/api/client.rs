@@ -1,23 +1,39 @@
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use log::{debug, warn};
+use quick_xml::de::from_str as from_xml_str;
 use reqwest::{Client, Method, Request, StatusCode};
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use super::auth::credentials::Credentials;
+use super::models::cce::{
+    CceClusterCertRequest, CceClusterListResponse, CceCreateClusterRequest,
+    CceNodePoolListResponse, CceUpdateClusterRequest, CceUpdateClusterSpec,
+};
 use super::models::ecs::{
     CreateEcsRequest, DeleteEcsRequest, DeleteEcsServer, EcsListResponse, Flavor,
     FlavorListResponse, StopEcsAction, StopEcsRequest, StopEcsServer,
 };
-use super::models::eip::EipListResponse;
+use super::models::eip::{
+    CreatePublicIpBandwidth, CreatePublicIpBody, CreatePublicIpRequest, EipListResponse,
+};
 use super::models::evs::EvsListResponse;
 use super::models::iam::ProjectsResponse;
 use super::models::ims::{Image, ImageListResponse};
+use super::models::nat::{
+    NatGatewayCreateBody, NatGatewayCreateRequest, NatGatewayListResponse,
+    NatGatewaySingleResponse, SnatRuleCreateBody, SnatRuleCreateRequest,
+};
+use super::models::obs::{ObsBucket, ObsListBucketsResponse, ObsListObjectsResponse, ObsObject};
 use super::models::vpc::{Subnet, SubnetListResponse, Vpc, VpcListResponse};
 
 type HmacSha256 = Hmac<Sha256>;
+type HmacSha1 = Hmac<Sha1>;
 
 const SIGNING_ALGORITHM: &str = "SDK-HMAC-SHA256";
 const SIGNED_HEADERS: &str = "host;x-sdk-date";
@@ -25,7 +41,12 @@ const HEADER_HOST: &str = "Host";
 const HEADER_DATE: &str = "X-Sdk-Date";
 const HEADER_AUTH: &str = "Authorization";
 const HEADER_CONTENT_TYPE: &str = "Content-Type";
+const HEADER_DATE_RFC1123: &str = "Date";
+const HEADER_CONTENT_MD5: &str = "Content-MD5";
 const CONTENT_TYPE_JSON: &str = "application/json";
+const CONTENT_TYPE_XML: &str = "application/xml";
+const OBS_AUTH_PREFIX: &str = "OBS";
+const OBS_HEADER_PREFIX: &str = "x-obs-";
 const IAM_PROJECTS_PATH: &str = "/v3/auth/projects";
 
 /// Minimal Huawei Cloud API client with request signing.
@@ -58,6 +79,52 @@ fn push_query_param_u32(params: &mut Vec<String>, key: &str, value: Option<u32>)
     if let Some(value) = value {
         params.push(format!("{key}={value}"));
     }
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+struct ObsListBucketsXml {
+    #[serde(default)]
+    buckets: ObsBucketsXml,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+struct ObsBucketsXml {
+    #[serde(rename = "Bucket", default)]
+    bucket: Vec<ObsBucketXml>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+struct ObsBucketXml {
+    name: Option<String>,
+    creation_date: Option<String>,
+    location: Option<String>,
+    bucket_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+struct ObsListObjectsXml {
+    name: Option<String>,
+    prefix: Option<String>,
+    marker: Option<String>,
+    next_marker: Option<String>,
+    is_truncated: Option<String>,
+    #[serde(rename = "Contents", default)]
+    contents: Vec<ObsObjectXml>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+struct ObsObjectXml {
+    key: Option<String>,
+    last_modified: Option<String>,
+    #[serde(rename = "ETag")]
+    etag: Option<String>,
+    size: Option<u64>,
+    storage_class: Option<String>,
 }
 
 impl HwcClient {
@@ -247,6 +314,187 @@ impl HwcClient {
             .context("Failed to list EVS disks")
     }
 
+    /// List CCE clusters for the given region.
+    /// CCE Querying Clusters: GET /api/v3/projects/{project_id}/clusters
+    pub async fn list_cce_clusters(&self, region: &str) -> Result<CceClusterListResponse> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("cce.{region}.myhuaweicloud.com");
+        let path = format!("/api/v3/projects/{project_id}/clusters?detail=true");
+
+        self.send_json(Method::GET, &host, &path, None)
+            .await
+            .context("Failed to list CCE clusters")
+    }
+
+    /// Create a CCE cluster and return status + raw response body.
+    /// CCE Creating a Cluster: POST /api/v3/projects/{project_id}/clusters
+    pub async fn create_cce_cluster(
+        &self,
+        region: &str,
+        body: &CceCreateClusterRequest,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("cce.{region}.myhuaweicloud.com");
+        let path = format!("/api/v3/projects/{project_id}/clusters");
+        let json = serde_json::to_string(body).context("Failed to serialize CCE payload")?;
+
+        self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
+    /// Delete one CCE cluster.
+    /// CCE Deleting a Cluster: DELETE /api/v3/projects/{project_id}/clusters/{cluster_id}
+    pub async fn delete_cce_cluster(
+        &self,
+        region: &str,
+        cluster_id: &str,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("cce.{region}.myhuaweicloud.com");
+        let path = format!("/api/v3/projects/{project_id}/clusters/{cluster_id}");
+
+        self.send_raw(Method::DELETE, &host, &path, None).await
+    }
+
+    /// List node pools under one CCE cluster.
+    /// CCE Querying Node Pools: GET /api/v3/projects/{project_id}/clusters/{cluster_id}/nodepools
+    pub async fn list_cce_node_pools(
+        &self,
+        region: &str,
+        cluster_id: &str,
+    ) -> Result<CceNodePoolListResponse> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("cce.{region}.myhuaweicloud.com");
+        let path = format!("/api/v3/projects/{project_id}/clusters/{cluster_id}/nodepools");
+
+        self.send_json(Method::GET, &host, &path, None)
+            .await
+            .context("Failed to list CCE node pools")
+    }
+
+    /// Query one CCE job by ID and return status + raw body.
+    /// CCE Querying Task Status: GET /api/v3/projects/{project_id}/jobs/{job_id}
+    pub async fn get_cce_job(&self, region: &str, job_id: &str) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("cce.{region}.myhuaweicloud.com");
+        let path = format!("/api/v3/projects/{project_id}/jobs/{job_id}");
+
+        self.send_raw(Method::GET, &host, &path, None).await
+    }
+
+    /// List NAT gateways in one region (optionally filtered by VPC/subnet).
+    /// NAT Querying Public NAT Gateways: GET /v2/{project_id}/nat_gateways
+    pub async fn list_nat_gateways(
+        &self,
+        region: &str,
+        vpc_id: Option<&str>,
+        subnet_id: Option<&str>,
+    ) -> Result<NatGatewayListResponse> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("nat.{region}.myhuaweicloud.com");
+        let mut query: Vec<String> = Vec::new();
+        if let Some(value) = vpc_id.map(str::trim).filter(|value| !value.is_empty()) {
+            query.push(format!("router_id={}", encode_rfc3986(value)));
+        }
+        if let Some(value) = subnet_id.map(str::trim).filter(|value| !value.is_empty()) {
+            query.push(format!("internal_network_id={}", encode_rfc3986(value)));
+        }
+
+        let base_path = format!("/v2/{project_id}/nat_gateways");
+        let path = if query.is_empty() {
+            base_path
+        } else {
+            format!("{base_path}?{}", query.join("&"))
+        };
+
+        self.send_json(Method::GET, &host, &path, None)
+            .await
+            .context("Failed to list NAT gateways")
+    }
+
+    /// Create one NAT gateway.
+    /// NAT Creating a Public NAT Gateway: POST /v2/{project_id}/nat_gateways
+    pub async fn create_nat_gateway(
+        &self,
+        region: &str,
+        name: &str,
+        description: Option<&str>,
+        spec: &str,
+        vpc_id: &str,
+        subnet_id: &str,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("nat.{region}.myhuaweicloud.com");
+        let path = format!("/v2/{project_id}/nat_gateways");
+        let payload = NatGatewayCreateRequest {
+            nat_gateway: NatGatewayCreateBody {
+                name: name.to_string(),
+                description: description.map(str::to_string),
+                spec: spec.to_string(),
+                router_id: vpc_id.to_string(),
+                internal_network_id: subnet_id.to_string(),
+                enterprise_project_id: None,
+            },
+        };
+        let json =
+            serde_json::to_string(&payload).context("Failed to serialize NAT gateway payload")?;
+
+        self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
+    /// Query one NAT gateway.
+    /// NAT Querying Public NAT Gateway Details: GET /v2/{project_id}/nat_gateways/{nat_gateway_id}
+    pub async fn get_nat_gateway(
+        &self,
+        region: &str,
+        nat_gateway_id: &str,
+    ) -> Result<NatGatewaySingleResponse> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("nat.{region}.myhuaweicloud.com");
+        let path = format!("/v2/{project_id}/nat_gateways/{nat_gateway_id}");
+
+        self.send_json(Method::GET, &host, &path, None)
+            .await
+            .context("Failed to get NAT gateway")
+    }
+
+    /// Create one SNAT rule.
+    /// NAT Creating an SNAT Rule: POST /v2/{project_id}/snat_rules
+    pub async fn create_snat_rule(
+        &self,
+        region: &str,
+        nat_gateway_id: &str,
+        subnet_id: &str,
+        floating_ip_id: &str,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("nat.{region}.myhuaweicloud.com");
+        let path = format!("/v2/{project_id}/snat_rules");
+        let payload = SnatRuleCreateRequest {
+            snat_rule: SnatRuleCreateBody {
+                nat_gateway_id: nat_gateway_id.to_string(),
+                network_id: subnet_id.to_string(),
+                floating_ip_id: floating_ip_id.to_string(),
+            },
+        };
+        let json = serde_json::to_string(&payload).context("Failed to serialize SNAT payload")?;
+
+        self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
+    /// Delete one NAT gateway.
+    /// NAT Deleting a Public NAT Gateway: DELETE /v2/{project_id}/nat_gateways/{nat_gateway_id}
+    pub async fn delete_nat_gateway(
+        &self,
+        region: &str,
+        nat_gateway_id: &str,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("nat.{region}.myhuaweicloud.com");
+        let path = format!("/v2/{project_id}/nat_gateways/{nat_gateway_id}");
+
+        self.send_raw(Method::DELETE, &host, &path, None).await
+    }
+
     /// Create an ECS instance and return the status + raw response body.
     pub async fn create_ecs(
         &self,
@@ -303,6 +551,83 @@ impl HwcClient {
         self.send_raw(Method::DELETE, &host, &path_v1, None).await
     }
 
+    /// Create an Elastic IP.
+    /// EIP Applying for an EIP: POST /v1/{project_id}/publicips
+    pub async fn create_eip(
+        &self,
+        region: &str,
+        bandwidth_size: u32,
+        bandwidth_name: Option<&str>,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("vpc.{region}.myhuaweicloud.com");
+        let path = format!("/v1/{project_id}/publicips");
+        let generated_name = format!("cce-nat-eip-{}", Utc::now().format("%Y%m%d%H%M%S"));
+        let payload = CreatePublicIpRequest {
+            publicip: CreatePublicIpBody {
+                ip_type: "5_bgp".to_string(),
+            },
+            bandwidth: CreatePublicIpBandwidth {
+                name: bandwidth_name
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(generated_name.as_str())
+                    .to_string(),
+                size: bandwidth_size,
+                share_type: "PER".to_string(),
+                charge_mode: "traffic".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&payload).context("Failed to serialize EIP payload")?;
+
+        self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
+    /// Update one CCE cluster with an external API EIP.
+    /// CCE Updating a Cluster: PUT /api/v3/projects/{project_id}/clusters/{cluster_id}
+    pub async fn update_cce_cluster_external_ip(
+        &self,
+        region: &str,
+        cluster_id: &str,
+        external_ip: &str,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("cce.{region}.myhuaweicloud.com");
+        let path = format!("/api/v3/projects/{project_id}/clusters/{cluster_id}");
+        let payload = CceUpdateClusterRequest {
+            spec: CceUpdateClusterSpec {
+                cluster_external_ip: external_ip.to_string(),
+            },
+        };
+        let json =
+            serde_json::to_string(&payload).context("Failed to serialize CCE access payload")?;
+
+        self.send_raw(Method::PUT, &host, &path, Some(json)).await
+    }
+
+    /// Request cluster cert/config payload for kubeconfig usage.
+    /// CCE Creating a User Certificate: POST /api/v3/projects/{project_id}/clusters/{cluster_id}/clustercert
+    pub async fn get_cce_cluster_kubeconfig(
+        &self,
+        region: &str,
+        cluster_id: &str,
+        context: Option<&str>,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("cce.{region}.myhuaweicloud.com");
+        let path = format!("/api/v3/projects/{project_id}/clusters/{cluster_id}/clustercert");
+        let payload = CceClusterCertRequest {
+            context: context
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        };
+        let json = serde_json::to_string(&payload)
+            .context("Failed to serialize CCE clustercert payload")?;
+
+        self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
     /// Stop ECS instances.
     /// ECS Batch Stop: POST /v1/{project_id}/cloudservers/action with os-stop body.
     pub async fn stop_ecs(
@@ -326,6 +651,231 @@ impl HwcClient {
             serde_json::to_string(&payload).context("Failed to serialize ECS stop payload")?;
 
         self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
+    /// List OBS buckets in the provided region.
+    pub async fn list_obs_buckets(&self, region: &str) -> Result<ObsListBucketsResponse> {
+        let host = format!("obs.{region}.myhuaweicloud.com");
+        let (status, body) = self
+            .send_obs_raw(Method::GET, &host, "/", "/", None, None, &[])
+            .await
+            .context("Failed to list OBS buckets")?;
+
+        if !status.is_success() {
+            anyhow::bail!("OBS list buckets returned {}: {}", status, body);
+        }
+
+        parse_obs_list_buckets_response(&body)
+    }
+
+    /// Create an OBS bucket.
+    pub async fn create_obs_bucket(
+        &self,
+        region: &str,
+        bucket_name: &str,
+        default_storage_class: Option<&str>,
+        acl: Option<&str>,
+    ) -> Result<(StatusCode, String)> {
+        let host = format!("{bucket_name}.obs.{region}.myhuaweicloud.com");
+        let canonical_resource = format!("/{bucket_name}/");
+        let location_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><CreateBucketConfiguration xmlns="http://obs.{region}.myhuaweicloud.com/doc/2015-06-30/"><Location>{region}</Location></CreateBucketConfiguration>"#
+        );
+        let mut extra_headers = vec![("x-obs-bucket-type".to_string(), "OBJECT".to_string())];
+
+        if let Some(value) = default_storage_class
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            extra_headers.push(("x-default-storage-class".to_string(), value.to_string()));
+        }
+        if let Some(value) = acl.map(str::trim).filter(|value| !value.is_empty()) {
+            extra_headers.push(("x-obs-acl".to_string(), value.to_string()));
+        }
+
+        self.send_obs_raw(
+            Method::PUT,
+            &host,
+            "/",
+            &canonical_resource,
+            Some(location_xml.into_bytes()),
+            Some(CONTENT_TYPE_XML),
+            &extra_headers,
+        )
+        .await
+    }
+
+    /// Delete an OBS bucket.
+    pub async fn delete_obs_bucket(
+        &self,
+        region: &str,
+        bucket_name: &str,
+    ) -> Result<(StatusCode, String)> {
+        let host = format!("{bucket_name}.obs.{region}.myhuaweicloud.com");
+        let canonical_resource = format!("/{bucket_name}/");
+        self.send_obs_raw(
+            Method::DELETE,
+            &host,
+            "/",
+            &canonical_resource,
+            None,
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// List objects from one OBS bucket.
+    pub async fn list_obs_objects(
+        &self,
+        region: &str,
+        bucket_name: &str,
+        prefix: Option<&str>,
+        marker: Option<&str>,
+        max_keys: Option<u32>,
+    ) -> Result<ObsListObjectsResponse> {
+        let host = format!("{bucket_name}.obs.{region}.myhuaweicloud.com");
+        let mut query: Vec<String> = Vec::new();
+
+        if let Some(value) = prefix.map(str::trim).filter(|value| !value.is_empty()) {
+            query.push(format!("prefix={}", encode_rfc3986(value)));
+        }
+        if let Some(value) = marker.map(str::trim).filter(|value| !value.is_empty()) {
+            query.push(format!("marker={}", encode_rfc3986(value)));
+        }
+        if let Some(value) = max_keys.filter(|value| *value > 0) {
+            query.push(format!("max-keys={value}"));
+        }
+
+        let path = if query.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/?{}", query.join("&"))
+        };
+        let canonical_resource = format!("/{bucket_name}/");
+        let (status, body) = self
+            .send_obs_raw(
+                Method::GET,
+                &host,
+                &path,
+                &canonical_resource,
+                None,
+                None,
+                &[],
+            )
+            .await
+            .context("Failed to list OBS objects")?;
+
+        if !status.is_success() {
+            anyhow::bail!("OBS list objects returned {}: {}", status, body);
+        }
+
+        parse_obs_list_objects_response(bucket_name, &body)
+    }
+
+    /// Upload one object to OBS.
+    pub async fn put_obs_object(
+        &self,
+        region: &str,
+        bucket_name: &str,
+        object_key: &str,
+        content: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> Result<(StatusCode, String)> {
+        let host = format!("{bucket_name}.obs.{region}.myhuaweicloud.com");
+        let encoded_key = encode_obs_object_key(object_key);
+        let path = format!("/{encoded_key}");
+        let canonical_resource = format!("/{bucket_name}/{encoded_key}");
+        let mime = content_type
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("application/octet-stream");
+
+        self.send_obs_raw(
+            Method::PUT,
+            &host,
+            &path,
+            &canonical_resource,
+            Some(content),
+            Some(mime),
+            &[],
+        )
+        .await
+    }
+
+    /// Download one object from OBS.
+    pub async fn get_obs_object(
+        &self,
+        region: &str,
+        bucket_name: &str,
+        object_key: &str,
+    ) -> Result<(StatusCode, Vec<u8>, Option<String>)> {
+        let host = format!("{bucket_name}.obs.{region}.myhuaweicloud.com");
+        let encoded_key = encode_obs_object_key(object_key);
+        let path = format!("/{encoded_key}");
+        let canonical_resource = format!("/{bucket_name}/{encoded_key}");
+        let req = self.build_obs_request(
+            Method::GET,
+            &host,
+            &path,
+            &canonical_resource,
+            None,
+            None,
+            &[],
+        )?;
+        let resp = self.http.execute(req).await.context("Request failed")?;
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(HEADER_CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bytes = resp
+            .bytes()
+            .await
+            .context("Failed to read response")?
+            .to_vec();
+
+        if !status.is_success() {
+            let body = String::from_utf8_lossy(&bytes);
+            warn!(
+                "OBS API error: status={} host={} path={} body={}",
+                status, host, path, body
+            );
+        }
+        debug!(
+            "Signed OBS request: method={} host={} path={} status={}",
+            Method::GET,
+            host,
+            path,
+            status
+        );
+
+        Ok((status, bytes, content_type))
+    }
+
+    /// Delete one object from OBS.
+    pub async fn delete_obs_object(
+        &self,
+        region: &str,
+        bucket_name: &str,
+        object_key: &str,
+    ) -> Result<(StatusCode, String)> {
+        let host = format!("{bucket_name}.obs.{region}.myhuaweicloud.com");
+        let encoded_key = encode_obs_object_key(object_key);
+        let path = format!("/{encoded_key}");
+        let canonical_resource = format!("/{bucket_name}/{encoded_key}");
+
+        self.send_obs_raw(
+            Method::DELETE,
+            &host,
+            &path,
+            &canonical_resource,
+            None,
+            None,
+            &[],
+        )
+        .await
     }
 
     /// Resolve project ID for the provided region.
@@ -408,6 +958,43 @@ impl HwcClient {
         Ok((status, text))
     }
 
+    async fn send_obs_raw(
+        &self,
+        method: Method,
+        host: &str,
+        path: &str,
+        canonical_resource: &str,
+        body: Option<Vec<u8>>,
+        content_type: Option<&str>,
+        extra_headers: &[(String, String)],
+    ) -> Result<(StatusCode, String)> {
+        let req = self.build_obs_request(
+            method.clone(),
+            host,
+            path,
+            canonical_resource,
+            body,
+            content_type,
+            extra_headers,
+        )?;
+        let resp = self.http.execute(req).await.context("Request failed")?;
+        let status = resp.status();
+        let text = resp.text().await.context("Failed to read response")?;
+
+        if !status.is_success() {
+            warn!(
+                "OBS API error: status={} host={} path={} body={}",
+                status, host, path, text
+            );
+        }
+        debug!(
+            "Signed OBS request: method={} host={} path={} status={}",
+            method, host, path, status
+        );
+
+        Ok((status, text))
+    }
+
     /// Build a signed HTTP request using the Huawei Cloud SDK-HMAC-SHA256 scheme.
     fn build_request(
         &self,
@@ -465,6 +1052,66 @@ impl HwcClient {
         }
 
         debug!("Signed Huawei Cloud request: host={} path={}", host, path);
+        Ok(req.build()?)
+    }
+
+    /// Build a signed OBS request using Huawei OBS `Authorization: OBS AK:Signature`.
+    fn build_obs_request(
+        &self,
+        method: Method,
+        host: &str,
+        path: &str,
+        canonical_resource: &str,
+        body: Option<Vec<u8>>,
+        content_type: Option<&str>,
+        extra_headers: &[(String, String)],
+    ) -> Result<Request> {
+        let url = format!("https://{host}{path}");
+        let date_rfc1123 = Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let content_md5 = extra_headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(HEADER_CONTENT_MD5))
+            .map(|(_, value)| value.trim())
+            .unwrap_or("");
+        let content_type_for_sign = content_type.unwrap_or("");
+        let canonicalized_headers = canonicalize_obs_headers(extra_headers);
+        let string_to_sign = format!(
+            "{}\n{}\n{}\n{}\n{}{}",
+            method.as_str(),
+            content_md5,
+            content_type_for_sign,
+            date_rfc1123,
+            canonicalized_headers,
+            canonical_resource
+        );
+
+        let mut mac = HmacSha1::new_from_slice(self.credentials.secret_key.as_bytes())?;
+        mac.update(string_to_sign.as_bytes());
+        let signature = BASE64_STANDARD.encode(mac.finalize().into_bytes());
+        let authorization = format!(
+            "{} {}:{}",
+            OBS_AUTH_PREFIX, self.credentials.access_key, signature
+        );
+
+        let mut req = self
+            .http
+            .request(method, url)
+            .header(HEADER_HOST, host)
+            .header(HEADER_DATE_RFC1123, date_rfc1123)
+            .header(HEADER_AUTH, authorization);
+
+        if let Some(value) = content_type {
+            req = req.header(HEADER_CONTENT_TYPE, value);
+        }
+
+        for (name, value) in extra_headers {
+            req = req.header(name, value);
+        }
+
+        if let Some(payload) = body {
+            req = req.body(payload);
+        }
+
         Ok(req.build()?)
     }
 }
@@ -558,9 +1205,136 @@ fn sha256_hex(input: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn parse_obs_list_buckets_response(xml: &str) -> Result<ObsListBucketsResponse> {
+    let parsed: ObsListBucketsXml =
+        from_xml_str(xml).context("Failed to parse OBS list buckets XML response")?;
+    let buckets = parsed
+        .buckets
+        .bucket
+        .into_iter()
+        .filter_map(|bucket| {
+            let name = bucket.name.unwrap_or_default().trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(ObsBucket {
+                name,
+                creation_date: bucket
+                    .creation_date
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                location: bucket
+                    .location
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                bucket_type: bucket
+                    .bucket_type
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            })
+        })
+        .collect();
+
+    Ok(ObsListBucketsResponse { buckets })
+}
+
+fn parse_obs_list_objects_response(bucket_name: &str, xml: &str) -> Result<ObsListObjectsResponse> {
+    let parsed: ObsListObjectsXml =
+        from_xml_str(xml).context("Failed to parse OBS list objects XML response")?;
+
+    let objects = parsed
+        .contents
+        .into_iter()
+        .filter_map(|item| {
+            let key = item.key.unwrap_or_default().trim().to_string();
+            if key.is_empty() {
+                return None;
+            }
+            Some(ObsObject {
+                key,
+                last_modified: item
+                    .last_modified
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                etag: item
+                    .etag
+                    .map(|value| value.trim_matches('"').trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                size: item.size,
+                storage_class: item
+                    .storage_class
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            })
+        })
+        .collect();
+
+    let is_truncated = parsed
+        .is_truncated
+        .as_deref()
+        .map(|value| value.trim().eq_ignore_ascii_case("true") || value.trim() == "1")
+        .unwrap_or(false);
+
+    Ok(ObsListObjectsResponse {
+        bucket: parsed
+            .name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| bucket_name.to_string()),
+        prefix: parsed
+            .prefix
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        marker: parsed
+            .marker
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        next_marker: parsed
+            .next_marker
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        is_truncated,
+        objects,
+    })
+}
+
+fn canonicalize_obs_headers(headers: &[(String, String)]) -> String {
+    let mut canonical = headers
+        .iter()
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .filter(|(name, _)| name.starts_with(OBS_HEADER_PREFIX))
+        .collect::<Vec<_>>();
+    canonical.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if canonical.is_empty() {
+        return String::new();
+    }
+
+    canonical
+        .into_iter()
+        .map(|(name, value)| format!("{name}:{value}\n"))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn encode_obs_object_key(key: &str) -> String {
+    let trimmed = key.trim_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    trimmed
+        .split('/')
+        .map(encode_rfc3986)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{canonicalize_path, canonicalize_query};
+    use super::{
+        canonicalize_obs_headers, canonicalize_path, canonicalize_query, encode_obs_object_key,
+        parse_obs_list_buckets_response, parse_obs_list_objects_response,
+    };
 
     #[test]
     fn canonicalize_path_encodes_reserved_and_appends_trailing_slash() {
@@ -580,5 +1354,107 @@ mod tests {
     fn canonicalize_query_handles_missing_values() {
         let actual = canonicalize_query(Some("foo&bar=baz"));
         assert_eq!(actual, "bar=baz&foo=");
+    }
+
+    #[test]
+    fn canonicalize_obs_headers_keeps_x_obs_only_and_sorts() {
+        let headers = vec![
+            ("x-obs-acl".to_string(), "private".to_string()),
+            ("Content-Type".to_string(), "application/xml".to_string()),
+            ("X-OBS-meta-foo".to_string(), "bar".to_string()),
+        ];
+        assert_eq!(
+            canonicalize_obs_headers(&headers),
+            "x-obs-acl:private\nx-obs-meta-foo:bar\n"
+        );
+    }
+
+    #[test]
+    fn encode_obs_object_key_preserves_slashes() {
+        assert_eq!(
+            encode_obs_object_key("logs/2026/02/my file.txt"),
+            "logs/2026/02/my%20file.txt"
+        );
+    }
+
+    #[test]
+    fn parse_obs_list_buckets_xml() {
+        let xml = r#"
+            <ListAllMyBucketsResult>
+              <Buckets>
+                <Bucket>
+                  <Name>demo-bucket</Name>
+                  <CreationDate>2026-02-17T01:00:00.000Z</CreationDate>
+                  <Location>sa-brazil-1</Location>
+                  <BucketType>OBJECT</BucketType>
+                </Bucket>
+              </Buckets>
+            </ListAllMyBucketsResult>
+        "#;
+        let parsed = parse_obs_list_buckets_response(xml).expect("parse buckets");
+        assert_eq!(parsed.buckets.len(), 1);
+        assert_eq!(parsed.buckets[0].name, "demo-bucket");
+        assert_eq!(parsed.buckets[0].location.as_deref(), Some("sa-brazil-1"));
+    }
+
+    #[test]
+    fn parse_obs_list_objects_xml() {
+        let xml = r#"
+            <ListBucketResult>
+              <Name>demo-bucket</Name>
+              <Prefix></Prefix>
+              <Marker></Marker>
+              <NextMarker>next-token</NextMarker>
+              <IsTruncated>true</IsTruncated>
+              <Contents>
+                <Key>folder/test.txt</Key>
+                <LastModified>2026-02-17T01:00:00.000Z</LastModified>
+                <ETag>"abc123"</ETag>
+                <Size>42</Size>
+                <StorageClass>STANDARD</StorageClass>
+              </Contents>
+            </ListBucketResult>
+        "#;
+        let parsed = parse_obs_list_objects_response("demo-bucket", xml).expect("parse objects");
+        assert_eq!(parsed.bucket, "demo-bucket");
+        assert!(parsed.is_truncated);
+        assert_eq!(parsed.next_marker.as_deref(), Some("next-token"));
+        assert_eq!(parsed.objects.len(), 1);
+        assert_eq!(parsed.objects[0].key, "folder/test.txt");
+        assert_eq!(parsed.objects[0].etag.as_deref(), Some("abc123"));
+        assert_eq!(parsed.objects[0].size, Some(42));
+    }
+
+    #[test]
+    fn parse_obs_list_objects_uses_requested_bucket_when_name_missing() {
+        let xml = r#"
+            <ListBucketResult>
+              <Contents>
+                <Key>   </Key>
+              </Contents>
+            </ListBucketResult>
+        "#;
+        let parsed =
+            parse_obs_list_objects_response("fallback-bucket", xml).expect("parse fallback bucket");
+        assert_eq!(parsed.bucket, "fallback-bucket");
+        assert!(!parsed.is_truncated);
+        assert!(parsed.next_marker.is_none());
+        assert!(parsed.objects.is_empty());
+    }
+
+    #[test]
+    fn parse_obs_list_objects_treats_numeric_truncated_as_true() {
+        let xml = r#"
+            <ListBucketResult>
+              <Name>demo-bucket</Name>
+              <NextMarker>token-2</NextMarker>
+              <IsTruncated>1</IsTruncated>
+            </ListBucketResult>
+        "#;
+        let parsed =
+            parse_obs_list_objects_response("ignored", xml).expect("parse numeric truncate");
+        assert_eq!(parsed.bucket, "demo-bucket");
+        assert!(parsed.is_truncated);
+        assert_eq!(parsed.next_marker.as_deref(), Some("token-2"));
     }
 }

@@ -263,4 +263,60 @@ mod tests {
         assert_eq!(value["os-stop"]["servers"][0]["id"], "server-id");
         assert_eq!(value["os-stop"]["type"], "SOFT");
     }
+
+    #[test]
+    fn server_serializes_data_volumes_when_present() {
+        let payload = Server {
+            name: "example".to_string(),
+            image_ref: "img".to_string(),
+            flavor_ref: "flavor".to_string(),
+            vpcid: "vpc".to_string(),
+            nics: vec![Nic {
+                subnet_id: "subnet".to_string(),
+            }],
+            root_volume: RootVolume {
+                volumetype: "GPSSD".to_string(),
+                size: 40,
+            },
+            data_volumes: vec![DataVolume {
+                volumetype: "GPSSD".to_string(),
+                size: 100,
+                count: Some(2),
+                multiattach: Some(false),
+                hw_passthrough: Some(true),
+            }],
+            publicip: None,
+            admin_pass: None,
+        };
+
+        let value = serde_json::to_value(payload).expect("serialize server payload");
+        assert_eq!(value["data_volumes"][0]["volumetype"], "GPSSD");
+        assert_eq!(value["data_volumes"][0]["size"], 100);
+        assert_eq!(value["data_volumes"][0]["count"], 2);
+        assert_eq!(value["data_volumes"][0]["multiattach"], false);
+        assert_eq!(value["data_volumes"][0]["hw:passthrough"], true);
+    }
+
+    #[test]
+    fn server_omits_data_volumes_when_empty() {
+        let payload = Server {
+            name: "example".to_string(),
+            image_ref: "img".to_string(),
+            flavor_ref: "flavor".to_string(),
+            vpcid: "vpc".to_string(),
+            nics: vec![Nic {
+                subnet_id: "subnet".to_string(),
+            }],
+            root_volume: RootVolume {
+                volumetype: "GPSSD".to_string(),
+                size: 40,
+            },
+            data_volumes: Vec::new(),
+            publicip: None,
+            admin_pass: None,
+        };
+
+        let value = serde_json::to_value(payload).expect("serialize server payload");
+        assert!(value.get("data_volumes").is_none());
+    }
 }

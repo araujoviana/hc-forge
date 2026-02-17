@@ -1,6 +1,9 @@
+pub mod cce;
 pub mod ecs;
 pub mod eip;
 pub mod evs;
 pub mod iam;
 pub mod ims;
+pub mod nat;
+pub mod obs;
 pub mod vpc;
