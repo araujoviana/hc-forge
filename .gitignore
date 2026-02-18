@@ -1,27 +1,50 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+.pnp.*
+
+# Frontend build output
+dist/
+dist-ssr/
+.vite/
+coverage/
+*.tsbuildinfo
+
 # Rust / Cargo
-/target/
-/src-tauri/target/
+target/
+src-tauri/target/
 **/*.rs.bk
 
-# Node / Vite
-/node_modules/
-/dist/
-/dist-ssr/
-/.vite/
+# Tauri generated/output
+src-tauri/.tauri/
+src-tauri/gen/
+src-tauri/bundle/
+
+# Mobile native build artifacts and signing secrets
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/local.properties
+src-tauri/gen/android/keystore.properties
+src-tauri/gen/android/**/build/
+src-tauri/gen/apple/build/
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+
+# Logs
 *.log
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Tauri
-/src-tauri/gen/
-/src-tauri/.tauri/
-
-# Env files
+# Env files / secrets
 .env
 .env.*
 !.env.example
+!.env.*.example
 
 # OS / Editor
 .DS_Store
