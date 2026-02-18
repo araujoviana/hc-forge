@@ -119,12 +119,97 @@ pub struct CceClusterCertRequest {
     pub context: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CceCreateNodePoolRequest {
+    pub kind: String,
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    pub metadata: CceNodePoolCreateMetadata,
+    pub spec: CceNodePoolCreateSpec,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CceNodePoolCreateMetadata {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CceNodePoolCreateSpec {
+    #[serde(rename = "type")]
+    pub node_pool_type: String,
+    #[serde(rename = "initialNodeCount")]
+    pub initial_node_count: u32,
+    #[serde(rename = "nodeTemplate")]
+    pub node_template: CceNodePoolTemplateSpec,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CceNodePoolTemplateSpec {
+    pub flavor: String,
+    pub az: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<CceNodePoolLogin>,
+    #[serde(rename = "rootVolume")]
+    pub root_volume: CceNodePoolVolume,
+    #[serde(rename = "dataVolumes", skip_serializing_if = "Vec::is_empty", default)]
+    pub data_volumes: Vec<CceNodePoolVolume>,
+    #[serde(rename = "nodeNicSpec", skip_serializing_if = "Option::is_none")]
+    pub node_nic_spec: Option<CceNodePoolNicSpec>,
+    #[serde(rename = "billingMode")]
+    pub billing_mode: u8,
+    #[serde(rename = "extendParam", skip_serializing_if = "Option::is_none")]
+    pub extend_param: Option<CceNodePoolExtendParam>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CceNodePoolLogin {
+    #[serde(rename = "sshKey")]
+    pub ssh_key: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CceNodePoolVolume {
+    pub volumetype: String,
+    pub size: u32,
+    #[serde(rename = "extendParam", skip_serializing_if = "Option::is_none")]
+    pub extend_param: Option<CceNodePoolVolumeExtendParam>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CceNodePoolVolumeExtendParam {
+    #[serde(rename = "useType")]
+    pub use_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CceNodePoolNicSpec {
+    #[serde(rename = "primaryNic")]
+    pub primary_nic: CceNodePoolPrimaryNic,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CceNodePoolPrimaryNic {
+    #[serde(rename = "subnetId")]
+    pub subnet_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CceNodePoolExtendParam {
+    #[serde(rename = "maxPods", skip_serializing_if = "Option::is_none")]
+    pub max_pods: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CceAuthentication, CceClusterCertRequest, CceClusterCreateMetadata, CceClusterCreateSpec,
-        CceClusterTag, CceContainerNetwork, CceCreateClusterRequest, CceHostNetwork,
-        CceNodePoolListResponse, CceUpdateClusterRequest, CceUpdateClusterSpec,
+        CceClusterTag, CceContainerNetwork, CceCreateClusterRequest, CceCreateNodePoolRequest,
+        CceHostNetwork, CceNodePoolCreateMetadata, CceNodePoolCreateSpec, CceNodePoolExtendParam,
+        CceNodePoolListResponse, CceNodePoolLogin, CceNodePoolNicSpec, CceNodePoolPrimaryNic,
+        CceNodePoolTemplateSpec, CceNodePoolVolume, CceNodePoolVolumeExtendParam,
+        CceUpdateClusterRequest, CceUpdateClusterSpec,
     };
 
     #[test]
@@ -306,5 +391,113 @@ mod tests {
         let payload = CceClusterCertRequest { context: None };
         let value = serde_json::to_value(payload).expect("serialize cce cluster cert request");
         assert!(value.get("context").is_none());
+    }
+
+    #[test]
+    fn cce_create_node_pool_request_serializes_expected_fields() {
+        let payload = CceCreateNodePoolRequest {
+            kind: "NodePool".to_string(),
+            api_version: "v3".to_string(),
+            metadata: CceNodePoolCreateMetadata {
+                name: "workload-pool".to_string(),
+            },
+            spec: CceNodePoolCreateSpec {
+                node_pool_type: "vm".to_string(),
+                initial_node_count: 2,
+                node_template: CceNodePoolTemplateSpec {
+                    flavor: "c6.2xlarge.2".to_string(),
+                    az: "sa-brazil-1a".to_string(),
+                    os: Some("EulerOS 2.9".to_string()),
+                    login: Some(CceNodePoolLogin {
+                        ssh_key: "my-keypair".to_string(),
+                    }),
+                    root_volume: CceNodePoolVolume {
+                        volumetype: "GPSSD".to_string(),
+                        size: 40,
+                        extend_param: None,
+                    },
+                    data_volumes: vec![CceNodePoolVolume {
+                        volumetype: "GPSSD".to_string(),
+                        size: 100,
+                        extend_param: Some(CceNodePoolVolumeExtendParam {
+                            use_type: "docker".to_string(),
+                        }),
+                    }],
+                    node_nic_spec: Some(CceNodePoolNicSpec {
+                        primary_nic: CceNodePoolPrimaryNic {
+                            subnet_id: "subnet-id".to_string(),
+                        },
+                    }),
+                    billing_mode: 0,
+                    extend_param: Some(CceNodePoolExtendParam {
+                        max_pods: Some(110),
+                    }),
+                },
+            },
+        };
+
+        let value = serde_json::to_value(payload).expect("serialize cce create node pool request");
+        assert_eq!(value["kind"], "NodePool");
+        assert_eq!(value["apiVersion"], "v3");
+        assert_eq!(value["metadata"]["name"], "workload-pool");
+        assert_eq!(value["spec"]["type"], "vm");
+        assert_eq!(value["spec"]["initialNodeCount"], 2);
+        assert_eq!(value["spec"]["nodeTemplate"]["flavor"], "c6.2xlarge.2");
+        assert_eq!(value["spec"]["nodeTemplate"]["az"], "sa-brazil-1a");
+        assert_eq!(
+            value["spec"]["nodeTemplate"]["login"]["sshKey"],
+            "my-keypair"
+        );
+        assert_eq!(
+            value["spec"]["nodeTemplate"]["rootVolume"]["volumetype"],
+            "GPSSD"
+        );
+        assert_eq!(
+            value["spec"]["nodeTemplate"]["dataVolumes"][0]["extendParam"]["useType"],
+            "docker"
+        );
+        assert_eq!(
+            value["spec"]["nodeTemplate"]["nodeNicSpec"]["primaryNic"]["subnetId"],
+            "subnet-id"
+        );
+        assert_eq!(value["spec"]["nodeTemplate"]["billingMode"], 0);
+        assert_eq!(value["spec"]["nodeTemplate"]["extendParam"]["maxPods"], 110);
+    }
+
+    #[test]
+    fn cce_create_node_pool_request_omits_optional_fields_when_empty() {
+        let payload = CceCreateNodePoolRequest {
+            kind: "NodePool".to_string(),
+            api_version: "v3".to_string(),
+            metadata: CceNodePoolCreateMetadata {
+                name: "minimal-pool".to_string(),
+            },
+            spec: CceNodePoolCreateSpec {
+                node_pool_type: "vm".to_string(),
+                initial_node_count: 1,
+                node_template: CceNodePoolTemplateSpec {
+                    flavor: "c6.large.2".to_string(),
+                    az: "sa-brazil-1a".to_string(),
+                    os: None,
+                    login: None,
+                    root_volume: CceNodePoolVolume {
+                        volumetype: "SATA".to_string(),
+                        size: 40,
+                        extend_param: None,
+                    },
+                    data_volumes: Vec::new(),
+                    node_nic_spec: None,
+                    billing_mode: 0,
+                    extend_param: None,
+                },
+            },
+        };
+
+        let value = serde_json::to_value(payload).expect("serialize minimal cce node pool request");
+        assert!(value["spec"]["nodeTemplate"].get("os").is_none());
+        assert!(value["spec"]["nodeTemplate"].get("login").is_none());
+        assert!(value["spec"]["nodeTemplate"].get("dataVolumes").is_none());
+        assert!(value["spec"]["nodeTemplate"].get("nodeNicSpec").is_none());
+        assert!(value["spec"]["nodeTemplate"].get("extendParam").is_none());
     }
 }

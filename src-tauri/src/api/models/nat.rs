@@ -25,6 +25,21 @@ pub struct NatGatewaySingleResponse {
     pub nat_gateway: NatGateway,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SnatRule {
+    pub id: Option<String>,
+    pub nat_gateway_id: Option<String>,
+    pub network_id: Option<String>,
+    pub floating_ip_id: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SnatRuleListResponse {
+    #[serde(default)]
+    pub snat_rules: Vec<SnatRule>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct NatGatewayCreateRequest {
     pub nat_gateway: NatGatewayCreateBody,
@@ -58,7 +73,7 @@ pub struct SnatRuleCreateBody {
 mod tests {
     use super::{
         NatGatewayCreateBody, NatGatewayCreateRequest, NatGatewayListResponse, SnatRuleCreateBody,
-        SnatRuleCreateRequest,
+        SnatRuleCreateRequest, SnatRuleListResponse,
     };
 
     #[test]
@@ -123,5 +138,33 @@ mod tests {
         assert_eq!(value["snat_rule"]["nat_gateway_id"], "nat-1");
         assert_eq!(value["snat_rule"]["network_id"], "subnet-1");
         assert_eq!(value["snat_rule"]["floating_ip_id"], "eip-1");
+    }
+
+    #[test]
+    fn snat_rule_list_response_deserializes_items() {
+        let raw = r#"{
+          "snat_rules":[
+            {
+              "id":"snat-1",
+              "nat_gateway_id":"nat-1",
+              "network_id":"subnet-1",
+              "floating_ip_id":"eip-1",
+              "status":"ACTIVE"
+            }
+          ]
+        }"#;
+
+        let response: SnatRuleListResponse =
+            serde_json::from_str(raw).expect("deserialize snat rule list response");
+        assert_eq!(response.snat_rules.len(), 1);
+        assert_eq!(response.snat_rules[0].id.as_deref(), Some("snat-1"));
+        assert_eq!(
+            response.snat_rules[0].nat_gateway_id.as_deref(),
+            Some("nat-1")
+        );
+        assert_eq!(
+            response.snat_rules[0].floating_ip_id.as_deref(),
+            Some("eip-1")
+        );
     }
 }

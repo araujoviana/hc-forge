@@ -47,3 +47,6 @@ tauri-plugin-dialog = "2"
 russh = "0.57.0"
 tauri-plugin-notification = "2"
 tauri-plugin-fs = "2"
+moka = { version = "0.12.10", features = ["sync"] }
+futures = "0.3.31"
+tauri-plugin-os = "2"

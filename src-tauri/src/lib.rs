@@ -13,7 +13,10 @@ use crate::validators::{
 };
 use api::models::cce::{
     CceAuthentication, CceClusterCreateMetadata, CceClusterCreateSpec, CceClusterTag,
-    CceContainerNetwork, CceCreateClusterRequest, CceHostNetwork,
+    CceContainerNetwork, CceCreateClusterRequest, CceCreateNodePoolRequest, CceHostNetwork,
+    CceNodePoolCreateMetadata, CceNodePoolCreateSpec, CceNodePoolExtendParam, CceNodePoolLogin,
+    CceNodePoolNicSpec, CceNodePoolPrimaryNic, CceNodePoolTemplateSpec, CceNodePoolVolume,
+    CceNodePoolVolumeExtendParam,
 };
 use api::models::ecs::{
     Bandwidth, CreateEcsRequest, DataVolume, EcsListResponse, Eip, Flavor, Nic, PublicIp,
@@ -23,12 +26,13 @@ use api::models::vpc::{Subnet, Vpc};
 use api::{Credentials, CredentialsSource, HwcClient, ImageListFilters, ListParams};
 use base64::Engine;
 use chrono::Utc;
+use futures::stream::{self, StreamExt};
 use log::{error, info, warn};
 use rand::{distr::Alphanumeric, Rng};
 use russh::{client, ChannelMsg, Disconnect};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,6 +49,21 @@ const MAX_BANDWIDTH_SIZE: u32 = 300;
 const OBS_BUCKET_NAME_MIN: usize = 3;
 const OBS_BUCKET_NAME_MAX: usize = 63;
 const OBS_PUT_OBJECT_MAX_BYTES: usize = 5 * 1024 * 1024 * 1024;
+const OBS_LIST_MAX_KEYS: u32 = 1000;
+const OBS_BUCKET_TOTALS_MAX_PAGES: usize = 10_000;
+const CCE_NODE_POOL_INITIAL_COUNT_DEFAULT: u32 = 0;
+const CCE_NODE_POOL_INITIAL_COUNT_MIN: u32 = 0;
+const CCE_NODE_POOL_ROOT_VOLUME_SIZE_DEFAULT: u32 = 40;
+const CCE_NODE_POOL_ROOT_VOLUME_SIZE_MIN: u32 = 40;
+const CCE_NODE_POOL_ROOT_VOLUME_SIZE_MAX: u32 = 1024;
+const CCE_NODE_POOL_DATA_VOLUME_SIZE_DEFAULT: u32 = 100;
+const CCE_NODE_POOL_DATA_VOLUME_SIZE_MIN: u32 = 100;
+const CCE_NODE_POOL_DATA_VOLUME_SIZE_MAX: u32 = 32_768;
+const CCE_NODE_POOL_MAX_PODS_MIN: u32 = 16;
+const CCE_NODE_POOL_MAX_PODS_MAX: u32 = 256;
+const NAT_DELETE_CONCURRENCY: usize = 4;
+const NAT_EIP_DELETE_MAX_ATTEMPTS: u8 = 6;
+const NAT_EIP_DELETE_RETRY_DELAY_MS: u64 = 900;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +108,13 @@ struct EcsStopParams {
     region: String,
     server_id: String,
     stop_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EipDeleteParams {
+    region: String,
+    eip_id: String,
 }
 
 /// AK/SK credentials input from the UI.
@@ -139,6 +165,13 @@ struct ObsListObjectsParams {
     prefix: Option<String>,
     marker: Option<String>,
     max_keys: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsBucketTotalsParams {
+    region: String,
+    bucket_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +234,33 @@ struct CceListNodePoolsParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CceCreateNodePoolParams {
+    region: String,
+    cluster_id: String,
+    name: String,
+    flavor: String,
+    availability_zone: String,
+    subnet_id: Option<String>,
+    os: Option<String>,
+    ssh_key: Option<String>,
+    initial_node_count: Option<u32>,
+    root_volume_type: Option<String>,
+    root_volume_size: Option<u32>,
+    data_volume_type: Option<String>,
+    data_volume_size: Option<u32>,
+    max_pods: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceDeleteNodePoolParams {
+    region: String,
+    cluster_id: String,
+    node_pool_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CceGetJobParams {
     region: String,
     job_id: String,
@@ -238,6 +298,13 @@ struct CceBindClusterApiEipParams {
     region: String,
     cluster_id: String,
     eip_address: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CceCreateBindClusterApiEipParams {
+    region: String,
+    cluster_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -287,6 +354,13 @@ struct ObsGetObjectResult {
     content_base64: Option<String>,
     content_type: Option<String>,
     body: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ObsBucketTotalsResult {
+    total_size_bytes: u64,
+    total_object_count: u64,
+    pages_scanned: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -520,6 +594,34 @@ fn cce_operation_result(status: reqwest::StatusCode, body: String) -> CceOperati
     }
 }
 
+fn sanitize_cce_node_pool_initial_count(input: Option<u32>) -> u32 {
+    input
+        .unwrap_or(CCE_NODE_POOL_INITIAL_COUNT_DEFAULT)
+        .max(CCE_NODE_POOL_INITIAL_COUNT_MIN)
+}
+
+fn sanitize_cce_node_pool_root_volume_size(input: Option<u32>) -> u32 {
+    input
+        .unwrap_or(CCE_NODE_POOL_ROOT_VOLUME_SIZE_DEFAULT)
+        .clamp(
+            CCE_NODE_POOL_ROOT_VOLUME_SIZE_MIN,
+            CCE_NODE_POOL_ROOT_VOLUME_SIZE_MAX,
+        )
+}
+
+fn sanitize_cce_node_pool_data_volume_size(input: Option<u32>) -> u32 {
+    input
+        .unwrap_or(CCE_NODE_POOL_DATA_VOLUME_SIZE_DEFAULT)
+        .clamp(
+            CCE_NODE_POOL_DATA_VOLUME_SIZE_MIN,
+            CCE_NODE_POOL_DATA_VOLUME_SIZE_MAX,
+        )
+}
+
+fn sanitize_cce_node_pool_max_pods(input: Option<u32>) -> Option<u32> {
+    input.map(|value| value.clamp(CCE_NODE_POOL_MAX_PODS_MIN, CCE_NODE_POOL_MAX_PODS_MAX))
+}
+
 fn parse_json_or_string(raw: &str) -> Value {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -527,6 +629,50 @@ fn parse_json_or_string(raw: &str) -> Value {
     } else {
         serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(trimmed.to_string()))
     }
+}
+
+fn value_contains_case_insensitive(value: Option<&Value>, needle: &str) -> bool {
+    value
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|haystack| haystack.contains(&needle.to_ascii_lowercase()))
+}
+
+fn is_api_method_not_found_response(body: &Value) -> bool {
+    let error_code = body
+        .get("error_code")
+        .or_else(|| body.get("code"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase();
+    if error_code == "APIGW.0101" {
+        return true;
+    }
+    value_contains_case_insensitive(body.get("error_msg"), "method")
+        && value_contains_case_insensitive(body.get("error_msg"), "not found")
+}
+
+fn should_retry_nat_eip_delete(status: reqwest::StatusCode, body: &Value) -> bool {
+    if status != reqwest::StatusCode::CONFLICT {
+        return false;
+    }
+    let error_code = body
+        .get("error_code")
+        .or_else(|| body.get("code"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase();
+    if error_code == "EIP.7922" {
+        return true;
+    }
+    value_contains_case_insensitive(body.get("error_msg"), "associated instance")
+        || value_contains_case_insensitive(body.get("message"), "associated instance")
+}
+
+fn is_success_or_not_found(status: reqwest::StatusCode) -> bool {
+    status.is_success() || status == reqwest::StatusCode::NOT_FOUND
 }
 
 fn extract_nat_gateway_id(raw_body: &str) -> Option<String> {
@@ -683,7 +829,6 @@ async fn list_images(
         err.to_string()
     })?;
 
-    warn!("Raw images response: {:#?}", images);
     info!("Found {} images in region {}", images.len(), region);
 
     Ok(images)
@@ -1036,6 +1181,170 @@ async fn list_cce_node_pools(
         })
 }
 
+/// Create one node pool under a CCE cluster.
+#[tauri::command]
+async fn create_cce_node_pool(
+    params: CceCreateNodePoolParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let cluster_id = params.cluster_id.trim();
+    if cluster_id.is_empty() {
+        return Err("CCE cluster ID is required for node pool creation.".to_string());
+    }
+    let name = params.name.trim();
+    if name.is_empty() {
+        return Err("CCE node pool name is required.".to_string());
+    }
+    let flavor = params.flavor.trim();
+    if flavor.is_empty() {
+        return Err("CCE node pool flavor is required.".to_string());
+    }
+    let availability_zone = params.availability_zone.trim();
+    if availability_zone.is_empty() {
+        return Err("CCE node pool availability zone is required.".to_string());
+    }
+
+    let initial_node_count = sanitize_cce_node_pool_initial_count(params.initial_node_count);
+    let root_volume_size = sanitize_cce_node_pool_root_volume_size(params.root_volume_size);
+    let data_volume_size = sanitize_cce_node_pool_data_volume_size(params.data_volume_size);
+    let root_volume_type = params
+        .root_volume_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("GPSSD")
+        .to_string();
+    let data_volume_type = params
+        .data_volume_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(root_volume_type.as_str())
+        .to_string();
+    let node_os = params
+        .os
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let ssh_key = params
+        .ssh_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let subnet_id = params
+        .subnet_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let max_pods = sanitize_cce_node_pool_max_pods(params.max_pods);
+
+    let body = CceCreateNodePoolRequest {
+        kind: "NodePool".to_string(),
+        api_version: "v3".to_string(),
+        metadata: CceNodePoolCreateMetadata {
+            name: name.to_string(),
+        },
+        spec: CceNodePoolCreateSpec {
+            node_pool_type: "vm".to_string(),
+            initial_node_count,
+            node_template: CceNodePoolTemplateSpec {
+                flavor: flavor.to_string(),
+                az: availability_zone.to_string(),
+                os: node_os,
+                login: ssh_key.map(|value| CceNodePoolLogin { ssh_key: value }),
+                root_volume: CceNodePoolVolume {
+                    volumetype: root_volume_type,
+                    size: root_volume_size,
+                    extend_param: None,
+                },
+                data_volumes: vec![CceNodePoolVolume {
+                    volumetype: data_volume_type,
+                    size: data_volume_size,
+                    extend_param: Some(CceNodePoolVolumeExtendParam {
+                        use_type: "docker".to_string(),
+                    }),
+                }],
+                node_nic_spec: subnet_id.map(|value| CceNodePoolNicSpec {
+                    primary_nic: CceNodePoolPrimaryNic { subnet_id: value },
+                }),
+                billing_mode: 0,
+                extend_param: max_pods.map(|value| CceNodePoolExtendParam {
+                    max_pods: Some(value),
+                }),
+            },
+        },
+    };
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Creating CCE node pool: source={} region={} cluster_id={} name={} flavor={} az={} initial_count={}",
+        source_label, params.region, cluster_id, name, flavor, availability_zone, initial_node_count
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .create_cce_node_pool(&params.region, cluster_id, &body)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to create CCE node pool: region={} cluster_id={} name={} error={}",
+                params.region, cluster_id, name, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(cce_operation_result(status, body))
+}
+
+/// Delete one node pool under a CCE cluster.
+#[tauri::command]
+async fn delete_cce_node_pool(
+    params: CceDeleteNodePoolParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let cluster_id = params.cluster_id.trim();
+    if cluster_id.is_empty() {
+        return Err("CCE cluster ID is required for node pool deletion.".to_string());
+    }
+    let node_pool_id = params.node_pool_id.trim();
+    if node_pool_id.is_empty() {
+        return Err("CCE node pool ID is required.".to_string());
+    }
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Deleting CCE node pool: source={} region={} cluster_id={} node_pool_id={}",
+        source_label, params.region, cluster_id, node_pool_id
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .delete_cce_node_pool(&params.region, cluster_id, node_pool_id)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to delete CCE node pool: region={} cluster_id={} node_pool_id={} error={}",
+                params.region, cluster_id, node_pool_id, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(cce_operation_result(status, body))
+}
+
 /// Query one CCE job status.
 #[tauri::command]
 async fn get_cce_job(
@@ -1314,7 +1623,11 @@ async fn delete_cce_nat_gateway(
         err
     })?;
 
-    let nat_gateway_id = params.nat_gateway_id.trim();
+    let region = params.region.trim().to_string();
+    if region.is_empty() {
+        return Err("CCE region is required.".to_string());
+    }
+    let nat_gateway_id = params.nat_gateway_id.trim().to_string();
     if nat_gateway_id.is_empty() {
         return Err("CCE NAT gateway ID is required.".to_string());
     }
@@ -1322,22 +1635,237 @@ async fn delete_cce_nat_gateway(
     let source_label = credentials_source_label(&source);
     info!(
         "Deleting CCE NAT gateway: source={} region={} nat_gateway_id={}",
-        source_label, params.region, nat_gateway_id
+        source_label, region, nat_gateway_id
     );
 
     let client = HwcClient::new(credentials);
-    let (status, body) = client
-        .delete_nat_gateway(&params.region, nat_gateway_id)
+    let mut summary = json!({
+        "requested": {
+            "region": region.clone(),
+            "nat_gateway_id": nat_gateway_id.clone()
+        },
+        "snat_rules": {
+            "total": 0,
+            "deleted": [],
+            "delete_failures": 0
+        },
+        "eips": {
+            "total": 0,
+            "deleted": [],
+            "delete_failures": 0
+        },
+        "nat_gateway": {
+            "status": "not_requested"
+        }
+    });
+
+    let snat_rules = client
+        .list_snat_rules(&region, &nat_gateway_id)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to list SNAT rules before NAT delete: region={} nat_gateway_id={} error={}",
+                region, nat_gateway_id, err
+            );
+            err.to_string()
+        })?
+        .snat_rules;
+
+    summary["snat_rules"]["total"] = json!(snat_rules.len());
+    let mut snat_delete_results = Vec::with_capacity(snat_rules.len());
+    let mut snat_delete_failures = 0u32;
+    let mut eip_ids_seen = HashSet::new();
+    let mut eip_ids = Vec::new();
+    let mut snat_rule_ids = Vec::with_capacity(snat_rules.len());
+
+    for snat_rule in snat_rules {
+        let snat_rule_id = snat_rule
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let floating_ip_id = snat_rule
+            .floating_ip_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        if let Some(eip_id) = floating_ip_id {
+            if eip_ids_seen.insert(eip_id.clone()) {
+                eip_ids.push(eip_id);
+            }
+        }
+
+        let Some(snat_rule_id) = snat_rule_id else {
+            snat_delete_failures += 1;
+            snat_delete_results.push(json!({
+                "status": "error",
+                "error": "SNAT rule payload did not include an id.",
+                "snat_rule": snat_rule
+            }));
+            continue;
+        };
+        snat_rule_ids.push(snat_rule_id);
+    }
+
+    // NAT teardown can involve multiple SNAT/EIP resources; delete with bounded parallelism.
+    let snat_outcomes = stream::iter(snat_rule_ids.into_iter().map(|snat_rule_id| {
+        let client = client.clone();
+        let region = region.clone();
+        let nat_gateway_id = nat_gateway_id.clone();
+        async move {
+            match client
+                .delete_snat_rule(&region, &nat_gateway_id, &snat_rule_id)
+                .await
+            {
+                Ok((status, body)) => {
+                    let parsed_body = parse_json_or_string(&body);
+                    let not_found_ok = status == reqwest::StatusCode::NOT_FOUND
+                        && !is_api_method_not_found_response(&parsed_body);
+                    (
+                        json!({
+                            "id": snat_rule_id,
+                            "status": status.to_string(),
+                            "status_code": status.as_u16(),
+                            "body": parsed_body
+                        }),
+                        !status.is_success() && !not_found_ok,
+                    )
+                }
+                Err(err) => {
+                    warn!(
+                        "Failed to delete SNAT rule during NAT teardown: region={} nat_gateway_id={} snat_rule_id={} error={}",
+                        region, nat_gateway_id, snat_rule_id, err
+                    );
+                    (
+                        json!({
+                            "id": snat_rule_id,
+                            "status": "error",
+                            "error": err.to_string()
+                        }),
+                        true,
+                    )
+                }
+            }
+        }
+    }))
+    .buffer_unordered(NAT_DELETE_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+
+    for (result, failed) in snat_outcomes {
+        if failed {
+            snat_delete_failures += 1;
+        }
+        snat_delete_results.push(result);
+    }
+
+    summary["snat_rules"]["deleted"] = Value::Array(snat_delete_results);
+    summary["snat_rules"]["delete_failures"] = json!(snat_delete_failures);
+    summary["eips"]["total"] = json!(eip_ids.len());
+
+    let mut eip_delete_results = Vec::with_capacity(eip_ids.len());
+    let mut eip_delete_failures = 0u32;
+    let eip_outcomes = stream::iter(eip_ids.into_iter().map(|eip_id| {
+        let client = client.clone();
+        let region = region.clone();
+        let nat_gateway_id = nat_gateway_id.clone();
+        async move {
+            let mut last_status = reqwest::StatusCode::INTERNAL_SERVER_ERROR;
+            let mut last_body = Value::String(String::new());
+            for attempt in 1..=NAT_EIP_DELETE_MAX_ATTEMPTS {
+                match client.delete_eip(&region, &eip_id).await {
+                    Ok((status, body)) => {
+                        let parsed_body = parse_json_or_string(&body);
+                        let should_retry = should_retry_nat_eip_delete(status, &parsed_body)
+                            && attempt < NAT_EIP_DELETE_MAX_ATTEMPTS;
+                        last_status = status;
+                        last_body = parsed_body;
+                        if should_retry {
+                            tokio::time::sleep(Duration::from_millis(
+                                NAT_EIP_DELETE_RETRY_DELAY_MS,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return (
+                            json!({
+                                "id": eip_id,
+                                "status": status.to_string(),
+                                "status_code": status.as_u16(),
+                                "attempts": attempt,
+                                "body": last_body
+                            }),
+                            !is_success_or_not_found(status),
+                        );
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Failed to delete EIP during NAT teardown: region={} nat_gateway_id={} eip_id={} error={}",
+                            region, nat_gateway_id, eip_id, err
+                        );
+                        return (
+                            json!({
+                                "id": eip_id,
+                                "status": "error",
+                                "error": err.to_string()
+                            }),
+                            true,
+                        );
+                    }
+                }
+            }
+            (
+                json!({
+                    "id": eip_id,
+                    "status": last_status.to_string(),
+                    "status_code": last_status.as_u16(),
+                    "attempts": NAT_EIP_DELETE_MAX_ATTEMPTS,
+                    "body": last_body
+                }),
+                !is_success_or_not_found(last_status),
+            )
+        }
+    }))
+    .buffer_unordered(NAT_DELETE_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+
+    for (result, failed) in eip_outcomes {
+        if failed {
+            eip_delete_failures += 1;
+        }
+        eip_delete_results.push(result);
+    }
+
+    summary["eips"]["deleted"] = Value::Array(eip_delete_results);
+    summary["eips"]["delete_failures"] = json!(eip_delete_failures);
+
+    let (nat_status, nat_body) = client
+        .delete_nat_gateway(&region, &nat_gateway_id)
         .await
         .map_err(|err| {
             error!(
                 "Failed to delete CCE NAT gateway: region={} nat_gateway_id={} error={}",
-                params.region, nat_gateway_id, err
+                region, nat_gateway_id, err
             );
             err.to_string()
         })?;
+    summary["nat_gateway"] = json!({
+        "status": nat_status.to_string(),
+        "status_code": nat_status.as_u16(),
+        "body": parse_json_or_string(&nat_body)
+    });
 
-    Ok(cce_operation_result(status, body))
+    if nat_status.is_success() && (snat_delete_failures > 0 || eip_delete_failures > 0) {
+        summary["warning"] =
+            json!("NAT gateway deleted, but one or more SNAT/EIP cleanup steps reported errors.");
+    }
+
+    let body = serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string());
+    Ok(cce_operation_result(nat_status, body))
 }
 
 /// Bind a public EIP to one CCE cluster API endpoint for remote kubeconfig access.
@@ -1379,6 +1907,98 @@ async fn bind_cce_cluster_api_eip(
         })?;
 
     Ok(cce_operation_result(status, body))
+}
+
+/// Create a new public EIP and bind it to one CCE cluster API endpoint.
+#[tauri::command]
+async fn create_and_bind_cce_cluster_api_eip(
+    params: CceCreateBindClusterApiEipParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<CceOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let cluster_id = params.cluster_id.trim();
+    if cluster_id.is_empty() {
+        return Err("CCE cluster ID is required.".to_string());
+    }
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Creating and binding CCE cluster API EIP: source={} region={} cluster_id={}",
+        source_label, params.region, cluster_id
+    );
+
+    let client = HwcClient::new(credentials);
+    let eip_name = format!("cce-api-{}", Utc::now().format("%Y%m%d%H%M%S"));
+    let (eip_status, eip_body) = client
+        .create_eip(&params.region, DEFAULT_BANDWIDTH_SIZE, Some(&eip_name))
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to create EIP for CCE API binding: region={} cluster_id={} error={}",
+                params.region, cluster_id, err
+            );
+            err.to_string()
+        })?;
+
+    let mut summary = json!({
+        "requested": {
+            "region": params.region,
+            "cluster_id": cluster_id,
+            "action": "create_and_bind_api_eip"
+        },
+        "eip": {
+            "status": eip_status.to_string(),
+            "status_code": eip_status.as_u16(),
+            "body": parse_json_or_string(&eip_body)
+        }
+    });
+
+    if !eip_status.is_success() {
+        let body = serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string());
+        return Ok(cce_operation_result(eip_status, body));
+    }
+
+    let (eip_id, eip_address) = extract_eip_id_and_address(&eip_body);
+    if let Some(value) = eip_id {
+        summary["eip"]["id"] = json!(value);
+    }
+    let eip_address = match eip_address {
+        Some(value) => value,
+        None => {
+            summary["error"] = json!("EIP create succeeded but no public address was returned.");
+            let body =
+                serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string());
+            return Ok(cce_operation_result(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                body,
+            ));
+        }
+    };
+    summary["eip"]["address"] = json!(eip_address.clone());
+
+    let (bind_status, bind_body) = client
+        .update_cce_cluster_external_ip(&params.region, cluster_id, &eip_address)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to bind created EIP to CCE cluster API: region={} cluster_id={} eip_address={} error={}",
+                params.region, cluster_id, eip_address, err
+            );
+            err.to_string()
+        })?;
+    summary["bind"] = json!({
+        "status": bind_status.to_string(),
+        "status_code": bind_status.as_u16(),
+        "body": parse_json_or_string(&bind_body),
+        "cluster_external_ip": eip_address
+    });
+
+    let body = serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string());
+    Ok(cce_operation_result(bind_status, body))
 }
 
 /// Request cluster kubeconfig payload (clustercert API) for local kubectl access.
@@ -1580,6 +2200,98 @@ async fn list_obs_objects(
             );
             err.to_string()
         })
+}
+
+/// Scan all OBS object pages for one bucket and return total bytes/object count.
+#[tauri::command]
+async fn get_obs_bucket_totals(
+    params: ObsBucketTotalsParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<ObsBucketTotalsResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let bucket_name = normalize_obs_bucket_name(
+        &params.bucket_name,
+        OBS_BUCKET_NAME_MIN,
+        OBS_BUCKET_NAME_MAX,
+    )?;
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Calculating OBS totals: source={} region={} bucket={}",
+        source_label, params.region, bucket_name
+    );
+
+    let client = HwcClient::new(credentials);
+    let mut marker: Option<String> = None;
+    let mut seen_markers = HashSet::new();
+    let mut pages_scanned: usize = 0;
+    let mut total_object_count: u64 = 0;
+    let mut total_size_bytes: u64 = 0;
+
+    loop {
+        pages_scanned += 1;
+        if pages_scanned > OBS_BUCKET_TOTALS_MAX_PAGES {
+            return Err(format!(
+                "OBS totals aborted after {} pages to avoid infinite pagination.",
+                OBS_BUCKET_TOTALS_MAX_PAGES
+            ));
+        }
+
+        let response = client
+            .list_obs_objects(
+                &params.region,
+                &bucket_name,
+                None,
+                marker.as_deref(),
+                Some(OBS_LIST_MAX_KEYS),
+            )
+            .await
+            .map_err(|err| {
+                error!(
+                    "Failed to scan OBS totals: region={} bucket={} marker={} error={}",
+                    params.region,
+                    bucket_name,
+                    marker.clone().unwrap_or_else(|| "<start>".to_string()),
+                    err
+                );
+                err.to_string()
+            })?;
+
+        let objects = response.objects;
+        total_object_count = total_object_count.saturating_add(objects.len() as u64);
+        for object in objects {
+            if let Some(size) = object.size {
+                total_size_bytes = total_size_bytes.saturating_add(size);
+            }
+        }
+
+        let next_marker = response
+            .next_marker
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if !response.is_truncated || next_marker.is_none() {
+            break;
+        }
+        let next_marker = next_marker.unwrap_or_default();
+        if !seen_markers.insert(next_marker.clone()) {
+            return Err(format!(
+                "OBS totals pagination loop detected for marker '{}'.",
+                next_marker
+            ));
+        }
+        marker = Some(next_marker);
+    }
+
+    Ok(ObsBucketTotalsResult {
+        total_size_bytes,
+        total_object_count,
+        pages_scanned: pages_scanned as u32,
+    })
 }
 
 /// Upload one object to OBS.
@@ -1915,6 +2627,43 @@ async fn delete_ecs_with_eip(
         ecs: ecs_result,
         eip: eip_result,
     })
+}
+
+/// Delete one elastic IP by ID.
+#[tauri::command]
+async fn delete_eip(
+    params: EipDeleteParams,
+    credentials: Option<CredentialsInput>,
+) -> Result<DeleteOperationResult, String> {
+    let (credentials, source) = resolve_credentials(credentials).map_err(|err| {
+        error!("Failed to resolve credentials: {}", err);
+        err
+    })?;
+
+    let eip_id = params.eip_id.trim();
+    if eip_id.is_empty() {
+        return Err("EIP ID is required.".to_string());
+    }
+
+    let source_label = credentials_source_label(&source);
+    info!(
+        "Deleting EIP: source={} region={} eip_id={}",
+        source_label, params.region, eip_id
+    );
+
+    let client = HwcClient::new(credentials);
+    let (status, body) = client
+        .delete_eip(&params.region, eip_id)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to delete EIP: region={} eip_id={} error={}",
+                params.region, eip_id, err
+            );
+            err.to_string()
+        })?;
+
+    Ok(operation_result(status, body))
 }
 
 /// Stop one ECS instance using SOFT or HARD stop type.
@@ -2466,6 +3215,7 @@ async fn ssh_disconnect(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -2490,21 +3240,26 @@ pub fn run() {
             create_cce_cluster,
             delete_cce_cluster,
             list_cce_node_pools,
+            create_cce_node_pool,
+            delete_cce_node_pool,
             get_cce_job,
             list_cce_nat_gateways,
             create_cce_nat_gateway,
             delete_cce_nat_gateway,
             bind_cce_cluster_api_eip,
+            create_and_bind_cce_cluster_api_eip,
             get_cce_cluster_kubeconfig,
             list_obs_buckets,
             create_obs_bucket,
             delete_obs_bucket,
             list_obs_objects,
+            get_obs_bucket_totals,
             put_obs_object,
             get_obs_object,
             delete_obs_object,
             create_ecs,
             delete_ecs_with_eip,
+            delete_eip,
             stop_ecs,
             ssh_connect,
             ssh_exec,
@@ -2521,7 +3276,10 @@ pub fn run() {
 mod tests {
     use super::{
         extract_cluster_kubeconfig, extract_eip_id_and_address, extract_nat_gateway_id,
-        normalize_server_name, RANDOM_NAME_PLACEHOLDER,
+        is_api_method_not_found_response, is_success_or_not_found, normalize_server_name,
+        sanitize_cce_node_pool_data_volume_size, sanitize_cce_node_pool_initial_count,
+        sanitize_cce_node_pool_max_pods, sanitize_cce_node_pool_root_volume_size,
+        should_retry_nat_eip_delete, RANDOM_NAME_PLACEHOLDER,
     };
 
     #[test]
@@ -2543,6 +3301,43 @@ mod tests {
     fn extract_nat_gateway_id_reads_nested_payload() {
         let raw = r#"{"nat_gateway":{"id":"nat-123","name":"cce-nat"}}"#;
         assert_eq!(extract_nat_gateway_id(raw).as_deref(), Some("nat-123"));
+    }
+
+    #[test]
+    fn success_or_not_found_status_helper_handles_expected_codes() {
+        assert!(is_success_or_not_found(reqwest::StatusCode::NO_CONTENT));
+        assert!(is_success_or_not_found(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_success_or_not_found(reqwest::StatusCode::CONFLICT));
+    }
+
+    #[test]
+    fn api_method_not_found_detection_handles_gateway_payload() {
+        let payload = serde_json::json!({
+            "error_code": "APIGW.0101",
+            "error_msg": "The API does not exist: method DELETE not found"
+        });
+        assert!(is_api_method_not_found_response(&payload));
+        assert!(!is_api_method_not_found_response(&serde_json::json!({
+            "error_code": "NAT.0007",
+            "error_msg": "SNAT rule not found"
+        })));
+    }
+
+    #[test]
+    fn nat_eip_delete_retry_detection_matches_expected_conflict() {
+        assert!(should_retry_nat_eip_delete(
+            reqwest::StatusCode::CONFLICT,
+            &serde_json::json!({
+                "error_code": "EIP.7922",
+                "error_msg": "Publicip abc has associated instance."
+            })
+        ));
+        assert!(!should_retry_nat_eip_delete(
+            reqwest::StatusCode::NOT_FOUND,
+            &serde_json::json!({
+                "error_code": "EIP.0004"
+            })
+        ));
     }
 
     #[test]
@@ -2569,5 +3364,30 @@ mod tests {
             extract_cluster_kubeconfig(raw).as_deref(),
             Some("apiVersion: v1\nclusters: []")
         );
+    }
+
+    #[test]
+    fn sanitize_cce_node_pool_ranges_follow_documented_limits() {
+        assert_eq!(sanitize_cce_node_pool_initial_count(None), 0);
+        assert_eq!(sanitize_cce_node_pool_initial_count(Some(0)), 0);
+        assert_eq!(sanitize_cce_node_pool_initial_count(Some(3)), 3);
+
+        assert_eq!(sanitize_cce_node_pool_root_volume_size(None), 40);
+        assert_eq!(sanitize_cce_node_pool_root_volume_size(Some(1)), 40);
+        assert_eq!(sanitize_cce_node_pool_root_volume_size(Some(40)), 40);
+        assert_eq!(sanitize_cce_node_pool_root_volume_size(Some(2048)), 1024);
+
+        assert_eq!(sanitize_cce_node_pool_data_volume_size(None), 100);
+        assert_eq!(sanitize_cce_node_pool_data_volume_size(Some(10)), 100);
+        assert_eq!(sanitize_cce_node_pool_data_volume_size(Some(100)), 100);
+        assert_eq!(
+            sanitize_cce_node_pool_data_volume_size(Some(50_000)),
+            32_768
+        );
+
+        assert_eq!(sanitize_cce_node_pool_max_pods(None), None);
+        assert_eq!(sanitize_cce_node_pool_max_pods(Some(1)), Some(16));
+        assert_eq!(sanitize_cce_node_pool_max_pods(Some(110)), Some(110));
+        assert_eq!(sanitize_cce_node_pool_max_pods(Some(999)), Some(256));
     }
 }

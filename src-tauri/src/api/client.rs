@@ -3,17 +3,21 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use log::{debug, warn};
+use moka::sync::Cache;
 use quick_xml::de::from_str as from_xml_str;
 use reqwest::{Client, Method, Request, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
+use std::sync::LazyLock;
+use std::time::Duration;
 
 use super::auth::credentials::Credentials;
 use super::models::cce::{
     CceClusterCertRequest, CceClusterListResponse, CceCreateClusterRequest,
-    CceNodePoolListResponse, CceUpdateClusterRequest, CceUpdateClusterSpec,
+    CceCreateNodePoolRequest, CceNodePoolListResponse, CceUpdateClusterRequest,
+    CceUpdateClusterSpec,
 };
 use super::models::ecs::{
     CreateEcsRequest, DeleteEcsRequest, DeleteEcsServer, EcsListResponse, Flavor,
@@ -27,7 +31,7 @@ use super::models::iam::ProjectsResponse;
 use super::models::ims::{Image, ImageListResponse};
 use super::models::nat::{
     NatGatewayCreateBody, NatGatewayCreateRequest, NatGatewayListResponse,
-    NatGatewaySingleResponse, SnatRuleCreateBody, SnatRuleCreateRequest,
+    NatGatewaySingleResponse, SnatRuleCreateBody, SnatRuleCreateRequest, SnatRuleListResponse,
 };
 use super::models::obs::{ObsBucket, ObsListBucketsResponse, ObsListObjectsResponse, ObsObject};
 use super::models::vpc::{Subnet, SubnetListResponse, Vpc, VpcListResponse};
@@ -48,8 +52,30 @@ const CONTENT_TYPE_XML: &str = "application/xml";
 const OBS_AUTH_PREFIX: &str = "OBS";
 const OBS_HEADER_PREFIX: &str = "x-obs-";
 const IAM_PROJECTS_PATH: &str = "/v3/auth/projects";
+const PROJECT_ID_CACHE_MAX_CAPACITY: u64 = 256;
+const PROJECT_ID_CACHE_TTL_SECS: u64 = 900;
+
+// Reuse sockets/TLS sessions across commands instead of creating one reqwest client per call.
+static SHARED_HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    Client::builder()
+        .pool_idle_timeout(Some(Duration::from_secs(90)))
+        .pool_max_idle_per_host(16)
+        .tcp_keepalive(Some(Duration::from_secs(60)))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("failed to build shared reqwest client")
+});
+
+// AK + region -> project_id cache to avoid repeated IAM lookups for hot paths.
+static PROJECT_ID_CACHE: LazyLock<Cache<String, String>> = LazyLock::new(|| {
+    Cache::builder()
+        .max_capacity(PROJECT_ID_CACHE_MAX_CAPACITY)
+        .time_to_live(Duration::from_secs(PROJECT_ID_CACHE_TTL_SECS))
+        .build()
+});
 
 /// Minimal Huawei Cloud API client with request signing.
+#[derive(Clone)]
 pub struct HwcClient {
     credentials: Credentials,
     http: Client,
@@ -131,7 +157,7 @@ impl HwcClient {
     pub fn new(credentials: Credentials) -> Self {
         Self {
             credentials,
-            http: Client::new(),
+            http: SHARED_HTTP_CLIENT.clone(),
         }
     }
 
@@ -371,6 +397,39 @@ impl HwcClient {
             .context("Failed to list CCE node pools")
     }
 
+    /// Create one node pool under one CCE cluster.
+    /// CCE Creating a Node Pool: POST /api/v3/projects/{project_id}/clusters/{cluster_id}/nodepools
+    pub async fn create_cce_node_pool(
+        &self,
+        region: &str,
+        cluster_id: &str,
+        body: &CceCreateNodePoolRequest,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("cce.{region}.myhuaweicloud.com");
+        let path = format!("/api/v3/projects/{project_id}/clusters/{cluster_id}/nodepools");
+        let json =
+            serde_json::to_string(body).context("Failed to serialize CCE node pool payload")?;
+
+        self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
+    /// Delete one node pool under one CCE cluster.
+    /// CCE Deleting a Node Pool: DELETE /api/v3/projects/{project_id}/clusters/{cluster_id}/nodepools/{nodepool_id}
+    pub async fn delete_cce_node_pool(
+        &self,
+        region: &str,
+        cluster_id: &str,
+        node_pool_id: &str,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("cce.{region}.myhuaweicloud.com");
+        let path =
+            format!("/api/v3/projects/{project_id}/clusters/{cluster_id}/nodepools/{node_pool_id}");
+
+        self.send_raw(Method::DELETE, &host, &path, None).await
+    }
+
     /// Query one CCE job by ID and return status + raw body.
     /// CCE Querying Task Status: GET /api/v3/projects/{project_id}/jobs/{job_id}
     pub async fn get_cce_job(&self, region: &str, job_id: &str) -> Result<(StatusCode, String)> {
@@ -479,6 +538,52 @@ impl HwcClient {
         let json = serde_json::to_string(&payload).context("Failed to serialize SNAT payload")?;
 
         self.send_raw(Method::POST, &host, &path, Some(json)).await
+    }
+
+    /// List SNAT rules for one NAT gateway.
+    /// NAT Querying SNAT Rules: GET /v2/{project_id}/snat_rules?nat_gateway_id={nat_gateway_id}
+    pub async fn list_snat_rules(
+        &self,
+        region: &str,
+        nat_gateway_id: &str,
+    ) -> Result<SnatRuleListResponse> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("nat.{region}.myhuaweicloud.com");
+        let path = format!(
+            "/v2/{project_id}/snat_rules?nat_gateway_id={}",
+            encode_rfc3986(nat_gateway_id)
+        );
+
+        self.send_json(Method::GET, &host, &path, None)
+            .await
+            .context("Failed to list SNAT rules")
+    }
+
+    /// Delete one SNAT rule.
+    /// NAT Deleting an SNAT Rule:
+    /// - Preferred: DELETE /v2/{project_id}/nat_gateways/{nat_gateway_id}/snat_rules/{snat_rule_id}
+    /// - Fallback:  DELETE /v2/{project_id}/snat_rules/{snat_rule_id}
+    pub async fn delete_snat_rule(
+        &self,
+        region: &str,
+        nat_gateway_id: &str,
+        snat_rule_id: &str,
+    ) -> Result<(StatusCode, String)> {
+        let project_id = self.project_id(region).await?;
+        let host = format!("nat.{region}.myhuaweicloud.com");
+        let scoped_path =
+            format!("/v2/{project_id}/nat_gateways/{nat_gateway_id}/snat_rules/{snat_rule_id}");
+        let (scoped_status, scoped_body) = self
+            .send_raw(Method::DELETE, &host, &scoped_path, None)
+            .await?;
+        if scoped_status != StatusCode::NOT_FOUND && scoped_status != StatusCode::METHOD_NOT_ALLOWED
+        {
+            return Ok((scoped_status, scoped_body));
+        }
+
+        let legacy_path = format!("/v2/{project_id}/snat_rules/{snat_rule_id}");
+        self.send_raw(Method::DELETE, &host, &legacy_path, None)
+            .await
     }
 
     /// Delete one NAT gateway.
@@ -880,6 +985,11 @@ impl HwcClient {
 
     /// Resolve project ID for the provided region.
     async fn project_id(&self, region: &str) -> Result<String> {
+        let cache_key = format!("{}::{region}", self.credentials.access_key);
+        if let Some(project_id) = PROJECT_ID_CACHE.get(&cache_key) {
+            return Ok(project_id);
+        }
+
         let host = format!("iam.{region}.myhuaweicloud.com");
         let body: ProjectsResponse = self
             .send_json(Method::GET, &host, IAM_PROJECTS_PATH, None)
@@ -910,7 +1020,9 @@ impl HwcClient {
                 )
             })?;
 
-        Ok(project.id.clone())
+        let project_id = project.id.clone();
+        PROJECT_ID_CACHE.insert(cache_key, project_id.clone());
+        Ok(project_id)
     }
 
     async fn send_json<T: DeserializeOwned>(
@@ -923,17 +1035,18 @@ impl HwcClient {
         let req = self.build_request(method, host, path, body)?;
         let resp = self.http.execute(req).await.context("Request failed")?;
         let status = resp.status();
-        let text = resp.text().await.context("Failed to read response")?;
+        let bytes = resp.bytes().await.context("Failed to read response")?;
 
         if !status.is_success() {
+            let body = String::from_utf8_lossy(&bytes);
             warn!(
                 "Huawei Cloud API error: status={} host={} path={} body={}",
-                status, host, path, text
+                status, host, path, body
             );
             anyhow::bail!("Huawei Cloud API returned {}", status);
         }
 
-        serde_json::from_str(&text).context("Failed to parse JSON response")
+        serde_json::from_slice(&bytes).context("Failed to parse JSON response")
     }
 
     async fn send_raw(
