@@ -76,6 +76,12 @@ pnpm test:rust
 - VM passwords are encrypted before local persistence.
 - Use least-privilege IAM credentials for daily operations.
 
+## TODO
+
+- [ ] Create a HC Forge custom icon
+- [ ] Expand service coverage
+- [ ] Add pod management and remote access
+
 ## License
 
 MIT. See `LICENSE`.
