@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import ReloadIconButton from "../ReloadIconButton.vue";
 import SshTerminalPanel from "../SshTerminalPanel.vue";
+import TrashIconButton from "../TrashIconButton.vue";
 import type {
   CreateEcsResult,
   DockerContainerSummary,
@@ -43,6 +44,7 @@ const props = defineProps<{
   loadingEips: boolean;
   loadingEvss: boolean;
   loadingEcses: boolean;
+  deletingEipId: string | null;
   cacheAgeEips: string;
   cacheAgeEvss: string;
   cacheAgeEcses: string;
@@ -79,6 +81,7 @@ const props = defineProps<{
   sshButtonLabel: (ecs: EcsServer) => string;
   canStopEcs: (ecs: EcsServer) => boolean;
   stopEcs: (ecs: EcsServer) => void | Promise<void>;
+  deleteEip: (eip: EipRecord) => void | Promise<void>;
   deleteEcs: (ecs: EcsServer) => void | Promise<void>;
   startPolling: (serverId: string | null) => void;
   stopPolling: () => void;
@@ -163,6 +166,63 @@ const props = defineProps<{
 }>();
 
 const dockerfileImportInput = ref<HTMLInputElement | null>(null);
+const MOBILE_QUERY = "(max-width: 980px)";
+const isMobileViewport =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia(MOBILE_QUERY).matches;
+const INITIAL_VISIBLE_ITEMS = isMobileViewport ? 24 : 72;
+const VISIBLE_ITEMS_STEP = isMobileViewport ? 24 : 72;
+const eipVisibleCount = ref(INITIAL_VISIBLE_ITEMS);
+const evsVisibleCount = ref(INITIAL_VISIBLE_ITEMS);
+const ecsVisibleCount = ref(INITIAL_VISIBLE_ITEMS);
+
+watch(
+  () => props.eips.length,
+  () => {
+    eipVisibleCount.value = INITIAL_VISIBLE_ITEMS;
+  },
+  { immediate: true }
+);
+watch(
+  () => props.evss.length,
+  () => {
+    evsVisibleCount.value = INITIAL_VISIBLE_ITEMS;
+  },
+  { immediate: true }
+);
+watch(
+  () => props.ecses.length,
+  () => {
+    ecsVisibleCount.value = INITIAL_VISIBLE_ITEMS;
+  },
+  { immediate: true }
+);
+
+const visibleEips = computed(() => props.eips.slice(0, eipVisibleCount.value));
+const visibleEvss = computed(() => props.evss.slice(0, evsVisibleCount.value));
+const visibleEcses = computed(() => props.ecses.slice(0, ecsVisibleCount.value));
+const canShowMoreEips = computed(() => props.eips.length > visibleEips.value.length);
+const canShowMoreEvss = computed(() => props.evss.length > visibleEvss.value.length);
+const canShowMoreEcses = computed(() => props.ecses.length > visibleEcses.value.length);
+
+function showMoreEips() {
+  eipVisibleCount.value = Math.min(props.eips.length, eipVisibleCount.value + VISIBLE_ITEMS_STEP);
+}
+
+function showMoreEvss() {
+  evsVisibleCount.value = Math.min(
+    props.evss.length,
+    evsVisibleCount.value + VISIBLE_ITEMS_STEP
+  );
+}
+
+function showMoreEcses() {
+  ecsVisibleCount.value = Math.min(
+    props.ecses.length,
+    ecsVisibleCount.value + VISIBLE_ITEMS_STEP
+  );
+}
 
 const platformTabModel = computed({
   get: () => props.platformActiveTab,
@@ -359,10 +419,16 @@ async function handleDockerfileImportChange(event: Event) {
               @click="reloadEips()"
             />
           </div>
-          <div class="card-subtitle">{{ eips.length }} total • Updated {{ cacheAgeEips }}</div>
+          <div class="card-subtitle">
+            {{ eips.length }} total
+            <template v-if="eips.length > visibleEips.length">
+              • Showing first {{ visibleEips.length }}
+            </template>
+            • Updated {{ cacheAgeEips }}
+          </div>
           <div v-if="eips.length" class="entity-list eip-list">
             <article
-              v-for="(eip, index) in eips"
+              v-for="(eip, index) in visibleEips"
               :key="eip.id ?? eip.public_ip_address ?? `eip-${index}`"
               class="entity-item eip-item"
             >
@@ -403,7 +469,23 @@ async function handleDockerfileImportChange(event: Event) {
                   <span class="entity-meta-value">{{ eip.publicip_pool_name ?? "—" }}</span>
                 </div>
               </div>
+              <div class="ecs-item-actions">
+                <TrashIconButton
+                  :disabled="!eip.id || !!deletingEipId"
+                  :loading="deletingEipId === eip.id"
+                  :title="deletingEipId === eip.id ? 'Deleting EIP...' : 'Delete EIP'"
+                  @click="deleteEip(eip)"
+                />
+              </div>
             </article>
+            <button
+              v-if="canShowMoreEips"
+              class="ghost minor list-expand-btn"
+              type="button"
+              @click="showMoreEips"
+            >
+              Show More EIPs
+            </button>
           </div>
           <p v-else class="muted tiny">No elastic IPs found in this region.</p>
         </div>
@@ -418,10 +500,16 @@ async function handleDockerfileImportChange(event: Event) {
               @click="reloadEvss()"
             />
           </div>
-          <div class="card-subtitle">{{ evss.length }} total • Updated {{ cacheAgeEvss }}</div>
+          <div class="card-subtitle">
+            {{ evss.length }} total
+            <template v-if="evss.length > visibleEvss.length">
+              • Showing first {{ visibleEvss.length }}
+            </template>
+            • Updated {{ cacheAgeEvss }}
+          </div>
           <div v-if="evss.length" class="entity-list evs-list">
             <article
-              v-for="(volume, index) in evss"
+              v-for="(volume, index) in visibleEvss"
               :key="volume.id ?? volume.name ?? `evs-${index}`"
               class="entity-item evs-item"
             >
@@ -455,6 +543,14 @@ async function handleDockerfileImportChange(event: Event) {
                 </div>
               </div>
             </article>
+            <button
+              v-if="canShowMoreEvss"
+              class="ghost minor list-expand-btn"
+              type="button"
+              @click="showMoreEvss"
+            >
+              Show More EVS Disks
+            </button>
           </div>
           <p v-else class="muted tiny">No EVS disks found in this region.</p>
         </div>
@@ -471,10 +567,16 @@ async function handleDockerfileImportChange(event: Event) {
               @click="reloadEcses()"
             />
           </div>
-          <div class="card-subtitle">{{ ecses.length }} total • Updated {{ cacheAgeEcses }}</div>
+          <div class="card-subtitle">
+            {{ ecses.length }} total
+            <template v-if="ecses.length > visibleEcses.length">
+              • Showing first {{ visibleEcses.length }}
+            </template>
+            • Updated {{ cacheAgeEcses }}
+          </div>
           <div v-if="ecses.length" class="entity-list ecs-list">
             <article
-              v-for="(ecs, index) in ecses"
+              v-for="(ecs, index) in visibleEcses"
               :key="ecs.id ?? ecs.name ?? `ecs-${index}`"
               class="entity-item ecs-item"
             >
@@ -593,15 +695,22 @@ async function handleDockerfileImportChange(event: Event) {
                 >
                   {{ stoppingServerId === ecs.id ? "Stopping..." : "Stop" }}
                 </button>
-                <button
-                  class="ghost minor danger"
+                <TrashIconButton
                   :disabled="!ecs.id || deletingServerId === ecs.id || stoppingServerId === ecs.id"
+                  :loading="deletingServerId === ecs.id"
+                  :title="deletingServerId === ecs.id ? 'Deleting ECS...' : 'Delete ECS'"
                   @click="deleteEcs(ecs)"
-                >
-                  {{ deletingServerId === ecs.id ? "Deleting..." : "Delete" }}
-                </button>
+                />
               </div>
             </article>
+            <button
+              v-if="canShowMoreEcses"
+              class="ghost minor list-expand-btn"
+              type="button"
+              @click="showMoreEcses"
+            >
+              Show More ECS Instances
+            </button>
           </div>
           <p v-else class="muted tiny">No ECS instances found in this region.</p>
         </div>

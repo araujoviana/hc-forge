@@ -1,5 +1,10 @@
 export type VpcOption = { id: string; name: string };
-export type SubnetOption = { id: string; name: string; cidr: string };
+export type SubnetOption = {
+  id: string;
+  name: string;
+  cidr: string;
+  availability_zone?: string | null;
+};
 export type ImageOption = {
   id: string;
   name: string;

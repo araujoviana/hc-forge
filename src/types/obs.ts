@@ -39,3 +39,9 @@ export type ObsGetObjectResult = {
   content_type?: string | null;
   body?: string | null;
 };
+
+export type ObsBucketTotalsResult = {
+  total_size_bytes: number;
+  total_object_count: number;
+  pages_scanned: number;
+};

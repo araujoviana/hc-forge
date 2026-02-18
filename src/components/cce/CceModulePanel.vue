@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import ReloadIconButton from "../ReloadIconButton.vue";
+import TrashIconButton from "../TrashIconButton.vue";
 import type { EipRecord, SubnetOption, VpcOption } from "../../types/ecs";
 import type {
   CceCluster,
@@ -26,11 +27,26 @@ const props = defineProps<{
   clusterContainerNetworkCidr: string;
   clusterServiceCidr: string;
   clusterAuthenticationMode: string;
+  nodePoolName: string;
+  nodePoolFlavor: string;
+  nodePoolAvailabilityZone: string;
+  nodePoolOs: string;
+  nodePoolSshKey: string;
+  nodePoolInitialCount: number;
+  nodePoolRootVolumeType: string;
+  nodePoolRootVolumeSize: number;
+  nodePoolDataVolumeType: string;
+  nodePoolDataVolumeSize: number;
+  nodePoolMaxPods: number;
   natGatewayName: string;
   natGatewayDescription: string;
   natGatewaySpec: string;
   clusterVersions: readonly string[];
   clusterFlavors: readonly string[];
+  nodePoolFlavorOptions: Array<{ id: string; label: string }>;
+  nodePoolAvailabilityZones: string[];
+  nodePoolOsOptions: readonly string[];
+  nodeVolumeTypes: readonly string[];
   natGatewaySpecs: readonly string[];
   containerNetworkCidrs: readonly string[];
   serviceCidrs: readonly string[];
@@ -48,11 +64,22 @@ const props = defineProps<{
   selectedClusterId: string;
   deletingClusterId: string | null;
   nodePools: CceNodePool[];
+  loadingNodePoolFlavors: boolean;
   loadingNodePools: boolean;
+  canCreateNodePool: boolean;
+  creatingNodePool: boolean;
+  deletingNodePoolId: string | null;
   lastResult: CceOperationResult | null;
   jobResult: CceOperationResult | null;
   lastJobId: string;
   loadingJob: boolean;
+  pollingCce: boolean;
+  pollingAttempts: number;
+  pollMaxAttempts: number;
+  pollingStatus: string | null;
+  pollingError: string | null;
+  pollingTargetLabel: string | null;
+  canWatch: boolean;
   natGateways: CceNatGateway[];
   loadingNatGateways: boolean;
   canCreateNatGateway: boolean;
@@ -60,9 +87,9 @@ const props = defineProps<{
   deletingNatGatewayId: string | null;
   accessEips: EipRecord[];
   loadingAccessEips: boolean;
-  selectedAccessEipId: string;
   selectedClusterExternalIp: string;
   bindingAccessEip: boolean;
+  apiEipBindRequested: boolean;
   downloadingKubeconfig: boolean;
   errorMsg: string;
   quickCopyFeedback: string | null;
@@ -82,10 +109,20 @@ const emit = defineEmits<{
   (e: "update:clusterContainerNetworkCidr", value: string): void;
   (e: "update:clusterServiceCidr", value: string): void;
   (e: "update:clusterAuthenticationMode", value: string): void;
+  (e: "update:nodePoolName", value: string): void;
+  (e: "update:nodePoolFlavor", value: string): void;
+  (e: "update:nodePoolAvailabilityZone", value: string): void;
+  (e: "update:nodePoolOs", value: string): void;
+  (e: "update:nodePoolSshKey", value: string): void;
+  (e: "update:nodePoolInitialCount", value: number): void;
+  (e: "update:nodePoolRootVolumeType", value: string): void;
+  (e: "update:nodePoolRootVolumeSize", value: number): void;
+  (e: "update:nodePoolDataVolumeType", value: string): void;
+  (e: "update:nodePoolDataVolumeSize", value: number): void;
+  (e: "update:nodePoolMaxPods", value: number): void;
   (e: "update:natGatewayName", value: string): void;
   (e: "update:natGatewayDescription", value: string): void;
   (e: "update:natGatewaySpec", value: string): void;
-  (e: "update:selectedAccessEipId", value: string): void;
   (e: "create-cluster"): void;
   (e: "reload-vpcs"): void;
   (e: "reload-subnets"): void;
@@ -93,12 +130,17 @@ const emit = defineEmits<{
   (e: "select-cluster", clusterId: string): void;
   (e: "delete-cluster", cluster: CceCluster): void;
   (e: "reload-node-pools"): void;
+  (e: "reload-node-pool-flavors"): void;
+  (e: "create-node-pool"): void;
+  (e: "delete-node-pool", pool: CceNodePool): void;
   (e: "reload-job"): void;
+  (e: "start-polling", clusterId: string | null): void;
+  (e: "stop-polling"): void;
   (e: "reload-nat-gateways"): void;
   (e: "create-nat-gateway"): void;
   (e: "delete-nat-gateway", gateway: CceNatGateway): void;
   (e: "reload-access-eips"): void;
-  (e: "bind-cluster-access-eip"): void;
+  (e: "create-bind-cluster-access-eip"): void;
   (e: "download-kubeconfig"): void;
 }>();
 
@@ -154,6 +196,50 @@ const clusterAuthenticationModeModel = computed({
   get: () => props.clusterAuthenticationMode,
   set: (value: string) => emit("update:clusterAuthenticationMode", value),
 });
+const nodePoolNameModel = computed({
+  get: () => props.nodePoolName,
+  set: (value: string) => emit("update:nodePoolName", value),
+});
+const nodePoolFlavorModel = computed({
+  get: () => props.nodePoolFlavor,
+  set: (value: string) => emit("update:nodePoolFlavor", value),
+});
+const nodePoolAvailabilityZoneModel = computed({
+  get: () => props.nodePoolAvailabilityZone,
+  set: (value: string) => emit("update:nodePoolAvailabilityZone", value),
+});
+const nodePoolOsModel = computed({
+  get: () => props.nodePoolOs,
+  set: (value: string) => emit("update:nodePoolOs", value),
+});
+const nodePoolSshKeyModel = computed({
+  get: () => props.nodePoolSshKey,
+  set: (value: string) => emit("update:nodePoolSshKey", value),
+});
+const nodePoolInitialCountModel = computed({
+  get: () => props.nodePoolInitialCount,
+  set: (value: number) => emit("update:nodePoolInitialCount", value),
+});
+const nodePoolRootVolumeTypeModel = computed({
+  get: () => props.nodePoolRootVolumeType,
+  set: (value: string) => emit("update:nodePoolRootVolumeType", value),
+});
+const nodePoolRootVolumeSizeModel = computed({
+  get: () => props.nodePoolRootVolumeSize,
+  set: (value: number) => emit("update:nodePoolRootVolumeSize", value),
+});
+const nodePoolDataVolumeTypeModel = computed({
+  get: () => props.nodePoolDataVolumeType,
+  set: (value: string) => emit("update:nodePoolDataVolumeType", value),
+});
+const nodePoolDataVolumeSizeModel = computed({
+  get: () => props.nodePoolDataVolumeSize,
+  set: (value: number) => emit("update:nodePoolDataVolumeSize", value),
+});
+const nodePoolMaxPodsModel = computed({
+  get: () => props.nodePoolMaxPods,
+  set: (value: number) => emit("update:nodePoolMaxPods", value),
+});
 const natGatewayNameModel = computed({
   get: () => props.natGatewayName,
   set: (value: string) => emit("update:natGatewayName", value),
@@ -165,10 +251,6 @@ const natGatewayDescriptionModel = computed({
 const natGatewaySpecModel = computed({
   get: () => props.natGatewaySpec,
   set: (value: string) => emit("update:natGatewaySpec", value),
-});
-const selectedAccessEipIdModel = computed({
-  get: () => props.selectedAccessEipId,
-  set: (value: string) => emit("update:selectedAccessEipId", value),
 });
 
 function asObject(value: unknown): PlainObject {
@@ -259,18 +341,6 @@ function natGatewayStatus(gateway: CceNatGateway): string {
   return textValue(gateway.status, "UNKNOWN");
 }
 
-function eipId(item: EipRecord): string {
-  return textValue(item.id, "");
-}
-
-function eipAddress(item: EipRecord): string {
-  return textValue(item.public_ip_address, "—");
-}
-
-function eipStatus(item: EipRecord): string {
-  return textValue(item.status, "UNKNOWN");
-}
-
 function prettyBody(body: string): string {
   const trimmed = String(body ?? "").trim();
   if (!trimmed) {
@@ -327,6 +397,51 @@ const selectedClusterLabel = computed(() => {
 });
 
 const hasSelectedCluster = computed(() => !!props.selectedClusterId);
+const canCreateBindAccessEip = computed(
+  () =>
+    hasSelectedCluster.value &&
+    !props.bindingAccessEip &&
+    !props.apiEipBindRequested &&
+    !props.selectedClusterExternalIp
+);
+const canDownloadExternalKubeconfig = computed(
+  () =>
+    hasSelectedCluster.value &&
+    !props.downloadingKubeconfig &&
+    !props.apiEipBindRequested &&
+    !!props.selectedClusterExternalIp
+);
+const clusterAccessStateText = computed(() => {
+  if (props.bindingAccessEip) {
+    return "Creating EIP and binding API endpoint...";
+  }
+  if (props.apiEipBindRequested) {
+    return "Bind request submitted. Waiting for CCE to publish the API EIP.";
+  }
+  if (props.selectedClusterExternalIp) {
+    return "API endpoint has a bound public EIP.";
+  }
+  return "API endpoint is not bound to a public EIP yet.";
+});
+const clusterAccessActionText = computed(() => {
+  if (props.bindingAccessEip) {
+    return "Creating + Binding...";
+  }
+  if (props.apiEipBindRequested) {
+    return "Bind Requested...";
+  }
+  if (props.selectedClusterExternalIp) {
+    return "API EIP Bound";
+  }
+  return "Create + Bind API EIP";
+});
+const lastResultPrettyBody = computed(() =>
+  props.lastResult ? prettyBody(props.lastResult.body) : "No body returned."
+);
+const jobResultPrettyBody = computed(() =>
+  props.jobResult ? prettyBody(props.jobResult.body) : "No body returned."
+);
+const jobStatusSummary = computed(() => jobStatusText(props.jobResult));
 </script>
 
 <template>
@@ -460,7 +575,7 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
           </div>
           <details class="ccex-raw-details">
             <summary>Raw response</summary>
-            <pre class="ccex-raw">{{ prettyBody(lastResult.body) }}</pre>
+            <pre class="ccex-raw">{{ lastResultPrettyBody }}</pre>
           </details>
         </div>
         <p v-else class="ccex-hint">No CCE action yet.</p>
@@ -479,10 +594,35 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
         <p class="ccex-hint">
           Job ID: <span class="mono">{{ lastJobId || "none" }}</span>
         </p>
-        <p class="ccex-hint">Status: {{ jobStatusText(jobResult) }}</p>
+        <p class="ccex-hint">Status: {{ jobStatusSummary }}</p>
+        <div class="ccex-polling-row">
+          <div>
+            <p class="ccex-hint">
+              Watch:
+              <span v-if="pollingCce">Active ({{ pollingAttempts }}/{{ pollMaxAttempts }})</span>
+              <span v-else>Idle</span>
+              <span v-if="pollingStatus"> • {{ pollingStatus }}</span>
+            </p>
+            <p class="ccex-hint">
+              Target:
+              <span class="mono">{{ pollingTargetLabel || selectedClusterLabel }}</span>
+            </p>
+            <p v-if="pollingError" class="ccex-hint">{{ pollingError }}</p>
+          </div>
+          <div class="ccex-actions">
+            <button
+              class="ghost minor"
+              :disabled="pollingCce || !canWatch"
+              @click="emit('start-polling', selectedClusterId || null)"
+            >
+              Start Watch
+            </button>
+            <button class="ghost minor" :disabled="!pollingCce" @click="emit('stop-polling')">Stop</button>
+          </div>
+        </div>
         <details v-if="jobResult" class="ccex-raw-details">
           <summary>Raw job payload</summary>
-          <pre class="ccex-raw">{{ prettyBody(jobResult.body) }}</pre>
+          <pre class="ccex-raw">{{ jobResultPrettyBody }}</pre>
         </details>
       </section>
     </aside>
@@ -530,13 +670,12 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
               >
                 {{ clusterId(cluster) === selectedClusterId ? "Managing" : "Manage" }}
               </button>
-              <button
-                class="ghost minor danger"
+              <TrashIconButton
                 :disabled="!clusterId(cluster) || deletingClusterId === clusterId(cluster)"
+                :loading="deletingClusterId === clusterId(cluster)"
+                :title="deletingClusterId === clusterId(cluster) ? 'Deleting cluster...' : 'Delete cluster'"
                 @click="emit('delete-cluster', cluster)"
-              >
-                {{ deletingClusterId === clusterId(cluster) ? "Deleting..." : "Delete" }}
-              </button>
+              />
             </div>
           </article>
         </div>
@@ -558,6 +697,85 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
           <span class="mono">{{ selectedClusterLabel }}</span>
         </p>
 
+        <div v-if="hasSelectedCluster" class="ccex-grid-2">
+          <label class="ccex-input-group">
+            <span>Node Pool Name</span>
+            <input v-model="nodePoolNameModel" class="ccex-input" placeholder="workload-pool" />
+          </label>
+          <label class="ccex-input-group">
+            <span>Flavor</span>
+            <div class="ccex-inline-input">
+              <select v-model="nodePoolFlavorModel" class="ccex-input mono">
+                <option value="" disabled>Select a flavor</option>
+                <option v-for="item in nodePoolFlavorOptions" :key="item.id" :value="item.id">
+                  {{ item.label }}
+                </option>
+              </select>
+              <ReloadIconButton
+                :disabled="loadingNodePoolFlavors"
+                :loading="loadingNodePoolFlavors"
+                :title="loadingNodePoolFlavors ? 'Reloading node flavors...' : 'Reload node flavors'"
+                @click="emit('reload-node-pool-flavors')"
+              />
+            </div>
+          </label>
+          <label class="ccex-input-group">
+            <span>Availability Zone</span>
+            <select v-model="nodePoolAvailabilityZoneModel" class="ccex-input mono">
+              <option value="" disabled>Select an availability zone</option>
+              <option v-for="item in nodePoolAvailabilityZones" :key="item" :value="item">
+                {{ item }}
+              </option>
+            </select>
+          </label>
+          <label class="ccex-input-group">
+            <span>OS</span>
+            <select v-model="nodePoolOsModel" class="ccex-input">
+              <option v-for="item in nodePoolOsOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="ccex-input-group ccex-span-2">
+            <span>SSH Key Pair (optional)</span>
+            <input v-model="nodePoolSshKeyModel" class="ccex-input mono" placeholder="my-keypair" />
+          </label>
+          <label class="ccex-input-group">
+            <span>Initial Nodes</span>
+            <input v-model.number="nodePoolInitialCountModel" class="ccex-input" type="number" min="0" />
+          </label>
+          <label class="ccex-input-group">
+            <span>Max Pods / Node</span>
+            <input v-model.number="nodePoolMaxPodsModel" class="ccex-input" type="number" min="16" max="256" />
+          </label>
+          <label class="ccex-input-group">
+            <span>Root Volume Type</span>
+            <select v-model="nodePoolRootVolumeTypeModel" class="ccex-input">
+              <option v-for="item in nodeVolumeTypes" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="ccex-input-group">
+            <span>Root Volume Size (GB)</span>
+            <input v-model.number="nodePoolRootVolumeSizeModel" class="ccex-input" type="number" min="40" max="1024" />
+          </label>
+          <label class="ccex-input-group">
+            <span>Data Volume Type</span>
+            <select v-model="nodePoolDataVolumeTypeModel" class="ccex-input">
+              <option v-for="item in nodeVolumeTypes" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="ccex-input-group">
+            <span>Data Volume Size (GB)</span>
+            <input v-model.number="nodePoolDataVolumeSizeModel" class="ccex-input" type="number" min="100" max="32768" />
+          </label>
+        </div>
+        <div v-if="hasSelectedCluster" class="ccex-actions">
+          <button class="primary" :disabled="!canCreateNodePool" @click="emit('create-node-pool')">
+            {{ creatingNodePool ? "Creating..." : "Create Node Pool" }}
+          </button>
+        </div>
+        <p v-if="hasSelectedCluster" class="ccex-hint">
+          Tip: use a flavor/AZ pair supported in this region and cluster network.
+        </p>
+
         <div v-if="hasSelectedCluster && nodePools.length" class="ccex-list">
           <article v-for="pool in nodePools" :key="nodePoolId(pool) || nodePoolName(pool)" class="ccex-list-item">
             <div class="ccex-row-between ccex-item-head">
@@ -568,17 +786,27 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
               <span class="status-pill status-muted">{{ nodePoolPhase(pool) }}</span>
             </div>
             <div class="ccex-meta">Version: {{ nodePoolVersion(pool) }}</div>
+            <div class="ccex-actions">
+              <TrashIconButton
+                :disabled="!nodePoolId(pool) || deletingNodePoolId === nodePoolId(pool)"
+                :loading="deletingNodePoolId === nodePoolId(pool)"
+                :title="
+                  deletingNodePoolId === nodePoolId(pool) ? 'Deleting node pool...' : 'Delete node pool'
+                "
+                @click="emit('delete-node-pool', pool)"
+              />
+            </div>
           </article>
         </div>
         <p v-else-if="hasSelectedCluster" class="ccex-hint">No node pools found for this cluster.</p>
         <p v-else class="ccex-hint">Select a cluster in Management to inspect its node pools.</p>
       </section>
 
-      <section class="ccex-card">
+      <section v-if="hasSelectedCluster" class="ccex-card">
         <div class="ccex-row-between">
           <h3>Cluster Access</h3>
           <ReloadIconButton
-            :disabled="loadingAccessEips || !hasSelectedCluster"
+            :disabled="loadingAccessEips || bindingAccessEip || apiEipBindRequested"
             :loading="loadingAccessEips"
             :title="loadingAccessEips ? 'Reloading EIPs...' : 'Reload EIPs'"
             @click="emit('reload-access-eips')"
@@ -591,31 +819,26 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
         <p class="ccex-hint">
           API EIP: <span class="mono">{{ selectedClusterExternalIp || "not bound" }}</span>
         </p>
-
-        <label class="ccex-input-group">
-          <span>Bind API EIP</span>
-          <select v-model="selectedAccessEipIdModel" class="ccex-input" :disabled="!hasSelectedCluster">
-            <option value="">Select an EIP</option>
-            <option v-for="item in accessEips" :key="eipId(item) || eipAddress(item)" :value="eipId(item)">
-              {{ eipAddress(item) }} ({{ eipStatus(item) }})
-            </option>
-          </select>
-        </label>
+        <p class="ccex-hint">{{ clusterAccessStateText }}</p>
+        <p class="ccex-hint">Known EIPs in region: {{ accessEips.length }}</p>
 
         <div class="ccex-actions">
           <button
             class="primary"
-            :disabled="!hasSelectedCluster || !selectedAccessEipIdModel || bindingAccessEip"
-            @click="emit('bind-cluster-access-eip')"
+            :disabled="!canCreateBindAccessEip"
+            @click="emit('create-bind-cluster-access-eip')"
           >
-            {{ bindingAccessEip ? "Binding..." : "Bind API EIP" }}
+            {{ clusterAccessActionText }}
           </button>
-          <button class="ghost minor" :disabled="!hasSelectedCluster || downloadingKubeconfig" @click="emit('download-kubeconfig')">
+          <button class="ghost minor" :disabled="!canDownloadExternalKubeconfig" @click="emit('download-kubeconfig')">
             {{ downloadingKubeconfig ? "Preparing..." : "Download Kubeconfig" }}
           </button>
         </div>
         <p class="ccex-hint">
           Use this kubeconfig locally with <span class="mono">kubectl --kubeconfig &lt;file&gt; get nodes</span>.
+        </p>
+        <p v-if="!selectedClusterExternalIp" class="ccex-hint">
+          Kubeconfig download unlocks after API EIP is bound.
         </p>
       </section>
 
@@ -683,13 +906,16 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
               <span>Created: {{ textValue(gateway.created_at) }}</span>
             </div>
             <div class="ccex-actions">
-              <button
-                class="ghost minor danger"
+              <TrashIconButton
                 :disabled="!natGatewayId(gateway) || deletingNatGatewayId === natGatewayId(gateway)"
+                :loading="deletingNatGatewayId === natGatewayId(gateway)"
+                :title="
+                  deletingNatGatewayId === natGatewayId(gateway)
+                    ? 'Deleting NAT gateway...'
+                    : 'Delete NAT gateway'
+                "
                 @click="emit('delete-nat-gateway', gateway)"
-              >
-                {{ deletingNatGatewayId === natGatewayId(gateway) ? "Deleting..." : "Delete" }}
-              </button>
+              />
             </div>
           </article>
         </div>
@@ -744,6 +970,10 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
   gap: 8px;
 }
 
+.ccex-grid-2 > * {
+  min-width: 0;
+}
+
 .ccex-span-2 {
   grid-column: 1 / -1;
 }
@@ -751,6 +981,7 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
 .ccex-input-group {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .ccex-input-group > span {
@@ -878,8 +1109,18 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
   flex-wrap: wrap;
 }
 
+.ccex-polling-row {
+  display: grid;
+  gap: 8px;
+}
+
 .ccex-actions button {
   flex: 1 1 96px;
+}
+
+.ccex-actions :deep(.icon-trash) {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .ccex-status-row {
@@ -920,8 +1161,13 @@ const hasSelectedCluster = computed(() => !!props.selectedClusterId);
   }
 
   .ccex-row-between {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .ccex-row-between > :last-child {
+    margin-left: auto;
   }
 }
 </style>

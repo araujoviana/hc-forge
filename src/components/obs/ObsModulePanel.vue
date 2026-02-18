@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import ReloadIconButton from "../ReloadIconButton.vue";
+import TrashIconButton from "../TrashIconButton.vue";
 import type { ObsBucket, ObsObject, ObsOperationResult } from "../../types/obs";
 
 const props = defineProps<{
@@ -261,13 +262,12 @@ function handleUploadFileChange(event: Event) {
                 >
                   {{ selectedBucket === bucket.name ? "Managing" : "Manage" }}
                 </button>
-                <button
-                  class="ghost minor danger"
+                <TrashIconButton
                   :disabled="deletingBucket === bucket.name"
+                  :loading="deletingBucket === bucket.name"
+                  :title="deletingBucket === bucket.name ? 'Deleting bucket...' : 'Delete bucket'"
                   @click="emit('delete-bucket', bucket)"
-                >
-                  {{ deletingBucket === bucket.name ? "Deleting..." : "Delete" }}
-                </button>
+                />
               </div>
             </article>
           </div>
@@ -346,13 +346,12 @@ function handleUploadFileChange(event: Event) {
                   {{ downloadingObject === object.key ? "Downloading..." : "Download" }}
                 </button>
                 <button class="ghost minor" @click="emit('copy-object-key', object.key)">Copy Key</button>
-                <button
-                  class="ghost minor danger"
+                <TrashIconButton
                   :disabled="deletingObject === object.key"
+                  :loading="deletingObject === object.key"
+                  :title="deletingObject === object.key ? 'Deleting object...' : 'Delete object'"
                   @click="emit('delete-object', object.key)"
-                >
-                  {{ deletingObject === object.key ? "Deleting..." : "Delete" }}
-                </button>
+                />
               </div>
 
               <div v-if="downloadingObject === object.key && downloadProgress !== null" class="obsx-progress-wrap">
@@ -423,6 +422,12 @@ function handleUploadFileChange(event: Event) {
   gap: 8px;
 }
 
+.obsx-grid-2 > *,
+.obsx-grid-1 > *,
+.obsx-search-grid > * {
+  min-width: 0;
+}
+
 .obsx-grid-1 {
   display: grid;
   gap: 8px;
@@ -431,6 +436,7 @@ function handleUploadFileChange(event: Event) {
 .obsx-input-group {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .obsx-input-group > span {
@@ -590,6 +596,11 @@ function handleUploadFileChange(event: Event) {
   flex: 1 1 96px;
 }
 
+.obsx-actions :deep(.icon-trash) {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
 .obsx-search-panel {
   border: 1px solid rgba(166, 31, 44, 0.34);
   border-radius: 11px;
@@ -685,8 +696,13 @@ function handleUploadFileChange(event: Event) {
   }
 
   .obsx-row-between {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .obsx-row-between > :last-child {
+    margin-left: auto;
   }
 }
 </style>

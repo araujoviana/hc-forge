@@ -82,9 +82,9 @@ function clear() {
 .log-fab {
   position: fixed;
   right: 14px;
-  bottom: 12px;
-  min-height: 38px;
-  padding: 0 14px;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  min-height: 42px;
+  padding: 0 16px;
   border-radius: 999px;
   border: 1px solid rgba(166, 31, 44, 0.45);
   background: linear-gradient(135deg, #a61f2c 0%, #cf3f4f 100%);
@@ -93,7 +93,7 @@ function clear() {
     0 10px 24px rgba(123, 37, 44, 0.3),
     inset 0 -1px 0 rgba(0, 0, 0, 0.16);
   font-weight: 700;
-  font-size: 0.82rem;
+  font-size: 0.86rem;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -129,7 +129,7 @@ function clear() {
 .log-drawer {
   position: fixed;
   right: 14px;
-  bottom: 58px;
+  bottom: calc(62px + env(safe-area-inset-bottom, 0px));
   width: min(520px, calc(100vw - 20px));
   max-height: min(54vh, 430px);
   display: flex;
@@ -245,14 +245,21 @@ function clear() {
 @media (max-width: 980px) {
   .log-fab {
     right: 10px;
-    bottom: 10px;
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    min-height: 48px;
+    padding: 0 18px;
+    font-size: 0.92rem;
   }
 
   .log-drawer {
     right: 10px;
-    bottom: 56px;
+    bottom: calc(130px + env(safe-area-inset-bottom, 0px));
     width: min(96vw, 520px);
     max-height: 58vh;
+  }
+
+  .log-fab-alert {
+    animation: none;
   }
 }
 </style>

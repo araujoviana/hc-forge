@@ -1,20 +1,18 @@
 <script setup lang="ts">
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { LogLevel, attachLogger } from "@tauri-apps/plugin-log";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { platform as osPlatform } from "@tauri-apps/plugin-os";
 import {
   isPermissionGranted,
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import { load } from "@tauri-apps/plugin-store";
-import AppLogsPanel from "./components/AppLogsPanel.vue";
-import CceModulePanel from "./components/cce/CceModulePanel.vue";
-import EcsResponsePanel from "./components/ecs/EcsResponsePanel.vue";
-import ObsModulePanel from "./components/obs/ObsModulePanel.vue";
-import ReloadIconButton from "./components/ReloadIconButton.vue";
+import TrashIconButton from "./components/TrashIconButton.vue";
 import { AUTO_VM_UPDATE_COMMAND, SETUP_GUI_RDP_COMMAND } from "./constants/startupTasks";
 import {
   DEFAULT_PLATFORM_DOCKERFILE_PATH,
@@ -55,6 +53,7 @@ import type {
   DockerContainerSummary,
   DockerImageSummary,
   DeleteEcsResult,
+  DeleteOperationResult,
   EcsListResponse,
   EcsServer,
   EipListResponse,
@@ -87,12 +86,19 @@ import type {
 } from "./types/ecs";
 import type {
   ObsBucket,
+  ObsBucketTotalsResult,
   ObsGetObjectResult,
   ObsListBucketsResponse,
   ObsListObjectsResponse,
   ObsObject,
   ObsOperationResult,
 } from "./types/obs";
+
+const AppLogsPanel = defineAsyncComponent(() => import("./components/AppLogsPanel.vue"));
+const EcsInputsPanel = defineAsyncComponent(() => import("./components/ecs/EcsInputsPanel.vue"));
+const EcsResponsePanel = defineAsyncComponent(() => import("./components/ecs/EcsResponsePanel.vue"));
+const CceModulePanel = defineAsyncComponent(() => import("./components/cce/CceModulePanel.vue"));
+const ObsModulePanel = defineAsyncComponent(() => import("./components/obs/ObsModulePanel.vue"));
 
 const regions = [
   "sa-brazil-1",
@@ -114,6 +120,11 @@ const POLL_MAX_ATTEMPTS = 30;
 const CACHE_PREFIX = "cache.v1";
 const RELATIVE_TIME_TICK_MS = 30000;
 const MAX_LOG_ENTRIES = 350;
+const SEARCH_INPUT_DEBOUNCE_MS = 160;
+const IMAGE_FILTER_RELOAD_DEBOUNCE_MS = 220;
+const MOBILE_LAYOUT_BREAKPOINT_PX = 980;
+const MOBILE_LOG_ENTRY_LIMIT = 200;
+const HUAWEI_CLOUD_CONSOLE_URL = "https://console.huaweicloud.com/";
 
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 26;
@@ -131,7 +142,6 @@ const DATA_DISK_MIN_COUNT = 1;
 const DATA_DISK_MAX_COUNT = 24;
 const OBS_MAX_KEYS_MIN = 1;
 const OBS_MAX_KEYS_MAX = 1000;
-const OBS_TOTALS_MAX_PAGES = 10000;
 const OBS_PUT_OBJECT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 const OBS_BUCKET_NAME_REGEX = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const OBS_BUCKET_STORAGE_CLASSES = ["STANDARD", "WARM", "COLD", "DEEP_ARCHIVE"] as const;
@@ -146,6 +156,22 @@ const CCE_CONTROL_PLANE_FLAVORS = [
   "cce.s2.medium",
   "cce.s3.large",
 ] as const;
+const CCE_NODE_VOLUME_TYPES = ["GPSSD", "SSD", "SAS", "ESSD", "SATA"] as const;
+const CCE_NODE_OS_OPTIONS = [
+  "EulerOS 2.9",
+  "EulerOS 2.10",
+  "Huawei Cloud EulerOS 2.0",
+  "Ubuntu 22.04",
+  "Ubuntu 24.04",
+  "CentOS 7.6",
+] as const;
+const CCE_NODE_POOL_INITIAL_MIN = 0;
+const CCE_NODE_POOL_MAX_PODS_MIN = 16;
+const CCE_NODE_POOL_MAX_PODS_MAX = 256;
+const CCE_NODE_POOL_ROOT_VOLUME_MIN_GB = 40;
+const CCE_NODE_POOL_ROOT_VOLUME_MAX_GB = 1024;
+const CCE_NODE_POOL_DATA_VOLUME_MIN_GB = 100;
+const CCE_NODE_POOL_DATA_VOLUME_MAX_GB = 32768;
 const CCE_NAT_GATEWAY_SPECS = ["1"] as const;
 const CCE_CONTAINER_NETWORK_CIDR_OPTIONS = [
   "172.16.0.0/16",
@@ -202,11 +228,13 @@ const region = ref("sa-brazil-1");
 const name = ref("");
 const imageId = ref("");
 const imageSearch = ref("");
+const debouncedImageSearch = ref("");
 const imageVisibility = ref("public");
 const imageType = ref("gold");
 const useCustomName = ref(false);
 const flavorId = ref("");
 const flavorSearch = ref("");
+const debouncedFlavorSearch = ref("");
 const flavorArchFilter = ref("all");
 const flavorVcpuFilter = ref("all");
 const rootVolumeType = ref("GPSSD");
@@ -257,6 +285,7 @@ const loadingAll = ref(false);
 const loadingResponse = ref(false);
 const creating = ref(false);
 const deletingServerId = ref<string | null>(null);
+const deletingEipId = ref<string | null>(null);
 const stoppingServerId = ref<string | null>(null);
 
 const errorMsg = ref("");
@@ -264,6 +293,10 @@ const deleteMsg = ref<string | null>(null);
 const logPanelOpen = ref(false);
 const logEntries = ref<AppLogEntry[]>([]);
 const logsUnreadError = ref(false);
+const isMobileViewport = ref(false);
+const isMobileOs = ref(false);
+const isMobileUi = computed(() => isMobileViewport.value || isMobileOs.value);
+const logEntryLimit = ref(MAX_LOG_ENTRIES);
 const autoUpdateVmOnStartup = ref(false);
 const setupGuiRdpOnStartup = ref(false);
 const autoUpdatePendingServerIds = ref<string[]>([]);
@@ -358,8 +391,10 @@ const cceClusterServiceCidr = ref<(typeof CCE_SERVICE_CIDR_OPTIONS)[number]>("10
 const cceClusterAuthenticationMode = ref<(typeof CCE_AUTHENTICATION_MODES)[number]>("rbac");
 const cceVpcs = ref<VpcOption[]>([]);
 const cceSubnets = ref<SubnetOption[]>([]);
+const cceNodePoolFlavors = ref<FlavorOption[]>([]);
 const cceLoadingVpcs = ref(false);
 const cceLoadingSubnets = ref(false);
+const cceLoadingNodePoolFlavors = ref(false);
 const cceCreatingCluster = ref(false);
 const cceClusters = ref<CceCluster[]>([]);
 const cceLoadingClusters = ref(false);
@@ -367,11 +402,30 @@ const cceDeletingClusterId = ref<string | null>(null);
 const cceSelectedClusterId = ref("");
 const cceNodePools = ref<CceNodePool[]>([]);
 const cceLoadingNodePools = ref(false);
+const cceNodePoolName = ref("default-node-pool");
+const cceNodePoolFlavor = ref("");
+const cceNodePoolAvailabilityZone = ref("");
+const cceNodePoolOs = ref<(typeof CCE_NODE_OS_OPTIONS)[number]>("EulerOS 2.9");
+const cceNodePoolSshKey = ref("");
+const cceNodePoolInitialCount = ref(1);
+const cceNodePoolRootVolumeType = ref<(typeof CCE_NODE_VOLUME_TYPES)[number]>("GPSSD");
+const cceNodePoolRootVolumeSize = ref(CCE_NODE_POOL_ROOT_VOLUME_MIN_GB);
+const cceNodePoolDataVolumeType = ref<(typeof CCE_NODE_VOLUME_TYPES)[number]>("GPSSD");
+const cceNodePoolDataVolumeSize = ref(CCE_NODE_POOL_DATA_VOLUME_MIN_GB);
+const cceNodePoolMaxPods = ref(110);
+const cceCreatingNodePool = ref(false);
+const cceDeletingNodePoolId = ref<string | null>(null);
 const cceLastResult = ref<CceOperationResult | null>(null);
 const cceLastJobId = ref("");
 const cceJobResult = ref<CceOperationResult | null>(null);
 const cceLoadingJob = ref(false);
 const cceErrorMsg = ref("");
+const ccePolling = ref(false);
+const ccePollingAttempts = ref(0);
+const ccePollingStatus = ref<string | null>(null);
+const ccePollingError = ref<string | null>(null);
+const ccePollingTargetLabel = ref<string | null>(null);
+const ccePollingMode = ref<"status" | "create" | "delete">("status");
 const cceNatGatewayName = ref("cce-nat-gateway");
 const cceNatGatewayDescription = ref("");
 const cceNatGatewaySpec = ref<(typeof CCE_NAT_GATEWAY_SPECS)[number]>("1");
@@ -381,8 +435,8 @@ const cceCreatingNatGateway = ref(false);
 const cceDeletingNatGatewayId = ref<string | null>(null);
 const cceAccessEips = ref<EipRecord[]>([]);
 const cceLoadingAccessEips = ref(false);
-const cceSelectedAccessEipId = ref("");
 const cceBindingAccessEip = ref(false);
+const ccePendingApiEipBindClusterIds = ref<string[]>([]);
 const cceDownloadingKubeconfig = ref(false);
 
 const obsBucketName = ref("");
@@ -427,6 +481,10 @@ const cacheUpdatedAt = ref<Record<CachedResource, string | null>>({
 const nowMs = ref(Date.now());
 
 let pollingTimer: number | null = null;
+let ccePollingTimer: number | null = null;
+let imageSearchDebounceTimer: number | null = null;
+let flavorSearchDebounceTimer: number | null = null;
+let imageFilterReloadTimer: number | null = null;
 let passwordFeedbackTimer: number | null = null;
 let quickCopyFeedbackTimer: number | null = null;
 let relativeClockTimer: number | null = null;
@@ -436,6 +494,7 @@ let backendLogUnlisten: UnlistenFn | null = null;
 let sshOutputUnlisten: UnlistenFn | null = null;
 let errorListener: ((event: ErrorEvent) => void) | null = null;
 let rejectionListener: ((event: PromiseRejectionEvent) => void) | null = null;
+let viewportResizeListener: (() => void) | null = null;
 let sshTerminalSeq = 0;
 let resolveConfirmDialog: ((value: boolean) => void) | null = null;
 let autoUpdateDrainInFlight = false;
@@ -485,6 +544,41 @@ const canCreate = computed(
 const canListImages = computed(() => !!region.value && !loadingImages.value);
 const canListFlavors = computed(() => !!region.value && !loadingFlavors.value);
 
+const ecsById = computed(() => {
+  const map = new Map<string, EcsServer>();
+  for (const server of ecses.value) {
+    const id = server.id?.trim();
+    if (!id) {
+      continue;
+    }
+    map.set(id, server);
+  }
+  return map;
+});
+
+const eipByServerId = computed(() => {
+  const map = new Map<string, EipRecord>();
+  for (const eip of eips.value) {
+    const candidateIds = [
+      eip.associate_instance_id,
+      eip.vnic?.instance_id,
+      eip.vnic?.device_id,
+    ];
+    for (const rawId of candidateIds) {
+      const serverId = rawId?.trim();
+      if (!serverId || map.has(serverId)) {
+        continue;
+      }
+      map.set(serverId, eip);
+    }
+  }
+  return map;
+});
+
+const autoUpdatePendingSet = computed(() => new Set(autoUpdatePendingServerIds.value));
+const autoUpdateDoneSet = computed(() => new Set(autoUpdateDoneServerIds.value));
+const autoUpdateFailedSet = computed(() => new Set(autoUpdateFailedServerIds.value));
+
 const imageMinDisk = computed(() => {
   const image = images.value.find((item) => item.id === imageId.value);
   const minDisk = image?.min_disk ?? 1;
@@ -496,8 +590,7 @@ const imageMinRam = computed(() => {
   return image?.min_ram ?? 0;
 });
 
-function searchScore(text: string, query: string): number {
-  const haystack = text.toLowerCase();
+function searchScore(haystack: string, query: string): number {
   if (!query) {
     return 0;
   }
@@ -519,24 +612,25 @@ function searchScore(text: string, query: string): number {
 }
 
 const filteredImages = computed(() => {
-  const query = imageSearch.value.trim().toLowerCase();
+  const query = debouncedImageSearch.value;
   if (!query) {
     return images.value;
   }
 
-  return images.value
-    .filter((image) => {
-      const imageName = image.name.toLowerCase();
-      return imageName.includes(query) || image.id.toLowerCase().includes(query);
-    })
-    .sort((a, b) => {
-      const scoreA = Math.min(searchScore(a.name, query), searchScore(a.id, query));
-      const scoreB = Math.min(searchScore(b.name, query), searchScore(b.id, query));
-      if (scoreA !== scoreB) {
-        return scoreA - scoreB;
-      }
-      return a.name.localeCompare(b.name);
+  const scored: Array<{ image: ImageOption; score: number }> = [];
+  for (const image of images.value) {
+    const nameLower = image.name.toLowerCase();
+    const idLower = image.id.toLowerCase();
+    if (!nameLower.includes(query) && !idLower.includes(query)) {
+      continue;
+    }
+    scored.push({
+      image,
+      score: Math.min(searchScore(nameLower, query), searchScore(idLower, query)),
     });
+  }
+  scored.sort((a, b) => a.score - b.score || a.image.name.localeCompare(b.image.name));
+  return scored.map((item) => item.image);
 });
 
 const flavorArchitectureOptions = computed(() => {
@@ -555,47 +649,42 @@ const flavorArchitectureOptions = computed(() => {
 });
 
 const filteredFlavors = computed(() => {
-  const query = flavorSearch.value.trim().toLowerCase();
+  const query = debouncedFlavorSearch.value;
   const minRam = imageMinRam.value;
+  const scored: Array<{ flavor: FlavorOption; score: number }> = [];
 
-  const matched = flavors.value
-    .filter((flavor) => {
-      if (!minRam || flavor.ram == null) {
-        return true;
-      }
-      return flavor.ram >= minRam;
-    })
-    .filter((flavor) => {
-      if (flavorArchFilter.value === "all") {
-        return true;
-      }
-      return flavorArchitecture(flavor) === flavorArchFilter.value;
-    })
-    .filter((flavor) => matchesVcpuBucket(flavor, flavorVcpuFilter.value))
-    .filter((flavor) => {
-      if (!query) {
-        return true;
-      }
-      return (
-        flavor.name.toLowerCase().includes(query) ||
-        flavor.id.toLowerCase().includes(query)
-      );
+  for (const flavor of flavors.value) {
+    if (minRam && flavor.ram != null && flavor.ram < minRam) {
+      continue;
+    }
+    if (flavorArchFilter.value !== "all" && flavorArchitecture(flavor) !== flavorArchFilter.value) {
+      continue;
+    }
+    if (!matchesVcpuBucket(flavor, flavorVcpuFilter.value)) {
+      continue;
+    }
+    if (!query) {
+      scored.push({ flavor, score: 0 });
+      continue;
+    }
+
+    const nameLower = flavor.name.toLowerCase();
+    const idLower = flavor.id.toLowerCase();
+    if (!nameLower.includes(query) && !idLower.includes(query)) {
+      continue;
+    }
+    scored.push({
+      flavor,
+      score: Math.min(searchScore(nameLower, query), searchScore(idLower, query)),
     });
-
-  if (!query) {
-    return matched;
   }
 
-  return matched.sort((a, b) => {
-    const aText = `${a.name} ${a.id}`;
-    const bText = `${b.name} ${b.id}`;
-    const scoreA = searchScore(aText, query);
-    const scoreB = searchScore(bText, query);
-    if (scoreA !== scoreB) {
-      return scoreA - scoreB;
-    }
-    return a.name.localeCompare(b.name);
-  });
+  if (!query) {
+    return scored.map((item) => item.flavor);
+  }
+
+  scored.sort((a, b) => a.score - b.score || a.flavor.name.localeCompare(b.flavor.name));
+  return scored.map((item) => item.flavor);
 });
 
 const flavorGroups = computed<FlavorGroup[]>(() => {
@@ -655,7 +744,7 @@ const sshPanelServer = computed(() => {
   if (!serverId) {
     return null;
   }
-  return ecses.value.find((item) => item.id === serverId) ?? null;
+  return ecsById.value.get(serverId) ?? null;
 });
 
 const sshPanelHost = computed(() => {
@@ -678,7 +767,7 @@ const platformPanelServer = computed(() => {
   if (!serverId) {
     return null;
   }
-  return ecses.value.find((item) => item.id === serverId) ?? null;
+  return ecsById.value.get(serverId) ?? null;
 });
 
 const platformPanelHost = computed(() => {
@@ -696,15 +785,24 @@ const platformPanelBusy = computed(() => {
   return platformBusyServerId.value === platformPanelServerId.value;
 });
 
-const orderedLogEntries = computed(() =>
-  [...logEntries.value].sort((a, b) => b.id - a.id)
-);
+const orderedLogEntries = computed(() => logEntries.value);
 const obsBucketNameError = computed(() => validateObsBucketName(obsBucketName.value));
 const obsCanCreateBucket = computed(
   () => !obsBucketNameError.value && !obsCreatingBucket.value
 );
+const obsBucketByName = computed(() => {
+  const map = new Map<string, ObsBucket>();
+  for (const bucket of obsBuckets.value) {
+    const nameValue = bucket.name.trim();
+    if (!nameValue) {
+      continue;
+    }
+    map.set(nameValue, bucket);
+  }
+  return map;
+});
 const obsSelectedBucketRecord = computed(
-  () => obsBuckets.value.find((bucket) => bucket.name === obsSelectedBucket.value) ?? null
+  () => obsBucketByName.value.get(obsSelectedBucket.value) ?? null
 );
 const obsCanLoadObjects = computed(
   () => !!obsSelectedBucket.value && !obsLoadingObjects.value
@@ -739,6 +837,42 @@ const cceCanCreateCluster = computed(
     !!cceClusterServiceCidr.value.trim() &&
     !cceCreatingCluster.value
 );
+const cceCanCreateNodePool = computed(
+  () =>
+    !!cceSelectedClusterId.value &&
+    !!cceNodePoolName.value.trim() &&
+    !!cceNodePoolFlavor.value.trim() &&
+    !!cceNodePoolAvailabilityZone.value.trim() &&
+    cceNodePoolInitialCount.value >= CCE_NODE_POOL_INITIAL_MIN &&
+    cceNodePoolRootVolumeSize.value >= CCE_NODE_POOL_ROOT_VOLUME_MIN_GB &&
+    cceNodePoolRootVolumeSize.value <= CCE_NODE_POOL_ROOT_VOLUME_MAX_GB &&
+    cceNodePoolDataVolumeSize.value >= CCE_NODE_POOL_DATA_VOLUME_MIN_GB &&
+    cceNodePoolDataVolumeSize.value <= CCE_NODE_POOL_DATA_VOLUME_MAX_GB &&
+    cceNodePoolMaxPods.value >= CCE_NODE_POOL_MAX_PODS_MIN &&
+    cceNodePoolMaxPods.value <= CCE_NODE_POOL_MAX_PODS_MAX &&
+    !cceCreatingNodePool.value
+);
+const cceNodePoolFlavorOptions = computed(() =>
+  [...cceNodePoolFlavors.value]
+    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+    .map((item) => ({
+      id: item.id,
+      label: formatFlavorLabel(item),
+    }))
+);
+const cceNodePoolAvailabilityZoneOptions = computed(() => {
+  const zones = new Set<string>();
+  for (const subnet of cceSubnets.value) {
+    const zone = (subnet.availability_zone ?? "").trim();
+    if (zone) {
+      zones.add(zone);
+    }
+  }
+  if (cceNodePoolAvailabilityZone.value.trim()) {
+    zones.add(cceNodePoolAvailabilityZone.value.trim());
+  }
+  return [...zones].sort((left, right) => left.localeCompare(right));
+});
 const cceCanCreateNatGateway = computed(
   () =>
     !!cceNatGatewayName.value.trim() &&
@@ -757,14 +891,21 @@ const cceSelectedClusterExternalIp = computed(() => {
   if (!cluster) {
     return "";
   }
-  const spec = cceAsObject(cluster.spec);
-  return cceText(
-    spec.clusterExternalIP ??
-      spec.clusterExternalIp ??
-      spec.cluster_external_i_p ??
-      spec.cluster_external_ip
-  );
+  return cceClusterExternalIp(cluster);
 });
+const cceSelectedClusterApiEipBindRequested = computed(() => {
+  const clusterId = cceSelectedClusterId.value.trim();
+  if (!clusterId) {
+    return false;
+  }
+  return ccePendingApiEipBindClusterIds.value.includes(clusterId);
+});
+const cceCanWatch = computed(
+  () => !!cceSelectedClusterId.value || cceClusters.value.length > 0
+);
+const confirmDialogUsesDeleteIcon = computed(
+  () => confirmDialog.value.okLabel.trim().toLowerCase() === "delete"
+);
 
 watch(imageMinDisk, (minDisk) => {
   if (!rootVolumeSize.value || rootVolumeSize.value < minDisk) {
@@ -830,8 +971,94 @@ watch(obsObjectMaxKeys, (value) => {
   }
 });
 
+watch(cceNodePoolInitialCount, (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    cceNodePoolInitialCount.value = CCE_NODE_POOL_INITIAL_MIN;
+    return;
+  }
+  const sanitized = Math.max(CCE_NODE_POOL_INITIAL_MIN, Math.trunc(parsed));
+  if (sanitized !== value) {
+    cceNodePoolInitialCount.value = sanitized;
+  }
+});
+
+watch(cceNodePoolRootVolumeSize, (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    cceNodePoolRootVolumeSize.value = CCE_NODE_POOL_ROOT_VOLUME_MIN_GB;
+    return;
+  }
+  const sanitized = Math.min(
+    CCE_NODE_POOL_ROOT_VOLUME_MAX_GB,
+    Math.max(CCE_NODE_POOL_ROOT_VOLUME_MIN_GB, Math.trunc(parsed))
+  );
+  if (sanitized !== value) {
+    cceNodePoolRootVolumeSize.value = sanitized;
+  }
+});
+
+watch(cceNodePoolDataVolumeSize, (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    cceNodePoolDataVolumeSize.value = CCE_NODE_POOL_DATA_VOLUME_MIN_GB;
+    return;
+  }
+  const sanitized = Math.min(
+    CCE_NODE_POOL_DATA_VOLUME_MAX_GB,
+    Math.max(CCE_NODE_POOL_DATA_VOLUME_MIN_GB, Math.trunc(parsed))
+  );
+  if (sanitized !== value) {
+    cceNodePoolDataVolumeSize.value = sanitized;
+  }
+});
+
+watch(cceNodePoolMaxPods, (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    cceNodePoolMaxPods.value = 110;
+    return;
+  }
+  const sanitized = Math.min(
+    CCE_NODE_POOL_MAX_PODS_MAX,
+    Math.max(CCE_NODE_POOL_MAX_PODS_MIN, Math.trunc(parsed))
+  );
+  if (sanitized !== value) {
+    cceNodePoolMaxPods.value = sanitized;
+  }
+});
+
+// Keep filtering responsive on large lists by debouncing free-text search inputs.
+watch(
+  imageSearch,
+  (value) => {
+    if (imageSearchDebounceTimer !== null) {
+      window.clearTimeout(imageSearchDebounceTimer);
+    }
+    imageSearchDebounceTimer = window.setTimeout(() => {
+      debouncedImageSearch.value = value.trim().toLowerCase();
+    }, SEARCH_INPUT_DEBOUNCE_MS);
+  },
+  { immediate: true }
+);
+
+watch(
+  flavorSearch,
+  (value) => {
+    if (flavorSearchDebounceTimer !== null) {
+      window.clearTimeout(flavorSearchDebounceTimer);
+    }
+    flavorSearchDebounceTimer = window.setTimeout(() => {
+      debouncedFlavorSearch.value = value.trim().toLowerCase();
+    }, SEARCH_INPUT_DEBOUNCE_MS);
+  },
+  { immediate: true }
+);
+
+// Region switch invalidates service-scoped state and in-flight polling contexts.
 watch(region, async () => {
   stopPolling();
+  stopCcePolling();
   closePlatformPanel();
   deleteMsg.value = null;
   pendingStartupTaskCreate.value = null;
@@ -853,15 +1080,36 @@ watch(region, async () => {
   obsBucketTotalsError.value = null;
   obsLoadingBucketTotals.value = false;
   obsBucketTotalsLoadToken += 1;
+  deletingEipId.value = null;
   cceErrorMsg.value = "";
   cceLastResult.value = null;
   cceJobResult.value = null;
   cceLastJobId.value = "";
+  ccePolling.value = false;
+  ccePollingAttempts.value = 0;
+  ccePollingStatus.value = null;
+  ccePollingError.value = null;
+  ccePollingTargetLabel.value = null;
+  ccePollingMode.value = "status";
   cceClusters.value = [];
   cceSelectedClusterId.value = "";
   cceNodePools.value = [];
+  cceNodePoolName.value = "default-node-pool";
+  cceNodePoolFlavor.value = "";
+  cceNodePoolAvailabilityZone.value = "";
+  cceNodePoolOs.value = "EulerOS 2.9";
+  cceNodePoolSshKey.value = "";
+  cceNodePoolInitialCount.value = 1;
+  cceNodePoolRootVolumeType.value = "GPSSD";
+  cceNodePoolRootVolumeSize.value = CCE_NODE_POOL_ROOT_VOLUME_MIN_GB;
+  cceNodePoolDataVolumeType.value = "GPSSD";
+  cceNodePoolDataVolumeSize.value = CCE_NODE_POOL_DATA_VOLUME_MIN_GB;
+  cceNodePoolMaxPods.value = 110;
+  cceCreatingNodePool.value = false;
+  cceDeletingNodePoolId.value = null;
   cceVpcs.value = [];
   cceSubnets.value = [];
+  cceNodePoolFlavors.value = [];
   cceClusterVpcId.value = "";
   cceClusterSubnetId.value = "";
   cceNatGateways.value = [];
@@ -873,7 +1121,8 @@ watch(region, async () => {
   cceDeletingNatGatewayId.value = null;
   cceAccessEips.value = [];
   cceLoadingAccessEips.value = false;
-  cceSelectedAccessEipId.value = "";
+  ccePendingApiEipBindClusterIds.value = [];
+  cceLoadingNodePoolFlavors.value = false;
   cceBindingAccessEip.value = false;
   cceDownloadingKubeconfig.value = false;
 
@@ -882,6 +1131,7 @@ watch(region, async () => {
     return;
   }
   if (activeModule.value === "cce") {
+    await loadCceNodePoolFlavors({ log: false });
     await loadCceVpcs({ log: false });
     await loadCceClusters({ log: false });
     await loadCceAccessEips({ log: false });
@@ -905,6 +1155,9 @@ watch(activeModule, async (nextModule) => {
   if (nextModule === "cce") {
     cceErrorMsg.value = "";
     const jobs: Array<Promise<void>> = [];
+    if (!cceNodePoolFlavors.value.length) {
+      jobs.push(loadCceNodePoolFlavors({ log: false }));
+    }
     if (!cceVpcs.value.length) {
       jobs.push(loadCceVpcs({ log: false }));
     }
@@ -937,7 +1190,12 @@ watch(activeModule, async (nextModule) => {
 });
 
 watch([imageVisibility, imageType], () => {
-  loadImages();
+  if (imageFilterReloadTimer !== null) {
+    window.clearTimeout(imageFilterReloadTimer);
+  }
+  imageFilterReloadTimer = window.setTimeout(() => {
+    void loadImages();
+  }, IMAGE_FILTER_RELOAD_DEBOUNCE_MS);
 });
 
 watch(filteredImages, (list) => {
@@ -977,6 +1235,7 @@ watch(cceClusterVpcId, async (nextVpc, previousVpc) => {
   }
   cceSubnets.value = [];
   cceClusterSubnetId.value = "";
+  cceNodePoolAvailabilityZone.value = "";
   cceNatGateways.value = [];
   cceDeletingNatGatewayId.value = null;
   if (!nextVpc) {
@@ -989,11 +1248,12 @@ watch(cceClusterSubnetId, async (nextSubnet, previousSubnet) => {
   if (nextSubnet === previousSubnet) {
     return;
   }
+  syncCceNodePoolAvailabilityZone();
   await loadCceNatGateways({ log: false });
 });
 
-watch([cceAccessEips, cceSelectedClusterExternalIp], () => {
-  syncCceSelectedAccessEip();
+watch(cceSubnets, () => {
+  syncCceNodePoolAvailabilityZone();
 });
 
 watch(ecses, (servers) => {
@@ -1073,10 +1333,31 @@ function addLog(source: LogSource, level: LogLevelName, message: string) {
     level,
     message,
   };
-  const list = [...logEntries.value, next];
-  logEntries.value = list.slice(-MAX_LOG_ENTRIES);
+  logEntries.value.unshift(next);
+  if (logEntries.value.length > logEntryLimit.value) {
+    logEntries.value.length = logEntryLimit.value;
+  }
   if (level === "error" && !logPanelOpen.value) {
     logsUnreadError.value = true;
+  }
+}
+
+function syncMobileUiProfile() {
+  if (typeof window !== "undefined") {
+    isMobileViewport.value = window.innerWidth <= MOBILE_LAYOUT_BREAKPOINT_PX;
+  }
+  logEntryLimit.value = isMobileUi.value ? MOBILE_LOG_ENTRY_LIMIT : MAX_LOG_ENTRIES;
+}
+
+async function openHuaweiCloudConsole() {
+  try {
+    await openUrl(HUAWEI_CLOUD_CONSOLE_URL);
+    addLog("app", "info", "Opened Huawei Cloud console.");
+  } catch (err) {
+    addLog("app", "warn", `Failed to open Huawei Cloud console: ${errorToString(err)}`);
+    if (typeof window !== "undefined") {
+      window.open(HUAWEI_CLOUD_CONSOLE_URL, "_blank", "noopener,noreferrer");
+    }
   }
 }
 
@@ -1178,6 +1459,18 @@ async function initLogListeners() {
 }
 
 onMounted(() => {
+  try {
+    const os = osPlatform();
+    isMobileOs.value = os === "android" || os === "ios";
+  } catch {
+    isMobileOs.value = false;
+  }
+  syncMobileUiProfile();
+  viewportResizeListener = () => {
+    syncMobileUiProfile();
+  };
+  window.addEventListener("resize", viewportResizeListener, { passive: true });
+
   relativeClockTimer = window.setInterval(() => {
     nowMs.value = Date.now();
   }, RELATIVE_TIME_TICK_MS);
@@ -1188,6 +1481,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopPolling();
+  stopCcePolling();
   void disconnectActiveSsh({ silent: true });
   autoUpdateSessionToServerId.clear();
   autoUpdateSessionLineBuffer.clear();
@@ -1203,6 +1497,18 @@ onBeforeUnmount(() => {
   if (quickCopyFeedbackTimer !== null) {
     window.clearTimeout(quickCopyFeedbackTimer);
     quickCopyFeedbackTimer = null;
+  }
+  if (imageSearchDebounceTimer !== null) {
+    window.clearTimeout(imageSearchDebounceTimer);
+    imageSearchDebounceTimer = null;
+  }
+  if (flavorSearchDebounceTimer !== null) {
+    window.clearTimeout(flavorSearchDebounceTimer);
+    flavorSearchDebounceTimer = null;
+  }
+  if (imageFilterReloadTimer !== null) {
+    window.clearTimeout(imageFilterReloadTimer);
+    imageFilterReloadTimer = null;
   }
 
   if (relativeClockTimer !== null) {
@@ -1229,6 +1535,10 @@ onBeforeUnmount(() => {
   if (rejectionListener) {
     window.removeEventListener("unhandledrejection", rejectionListener);
     rejectionListener = null;
+  }
+  if (viewportResizeListener) {
+    window.removeEventListener("resize", viewportResizeListener);
+    viewportResizeListener = null;
   }
 });
 
@@ -1550,12 +1860,29 @@ function cceClusterDisplayName(cluster: CceCluster): string {
   return cceText(metadata.name, cceClusterId(cluster) || "unnamed-cluster");
 }
 
+function cceClusterSubnetFromCluster(cluster: CceCluster | null | undefined): string {
+  if (!cluster) {
+    return "";
+  }
+  const spec = cceAsObject(cluster.spec);
+  const hostNetwork = cceAsObject(spec.hostNetwork);
+  return cceText(hostNetwork.subnet);
+}
+
+function cceSelectedClusterSubnetId(): string {
+  const fromSelected = cceClusterSubnetFromCluster(cceSelectedCluster.value);
+  if (fromSelected) {
+    return fromSelected;
+  }
+  return cceText(cceClusterSubnetId.value);
+}
+
 function cceNodePoolId(nodePool: CceNodePool): string {
   const metadata = cceAsObject(nodePool.metadata);
   return cceText(metadata.id ?? metadata.uid);
 }
 
-function cceNodePoolName(nodePool: CceNodePool): string {
+function cceNodePoolDisplayName(nodePool: CceNodePool): string {
   const metadata = cceAsObject(nodePool.metadata);
   return cceText(metadata.name, cceNodePoolId(nodePool) || "node-pool");
 }
@@ -1580,21 +1907,183 @@ function cceResultSummary(resultValue: CceOperationResult): string {
   return `${resultValue.status_code} ${resultValue.status}`;
 }
 
-function syncCceSelectedAccessEip() {
-  const selectedId = cceSelectedAccessEipId.value.trim();
-  if (selectedId && cceAccessEips.value.some((item) => cceEipId(item) === selectedId)) {
-    return;
+function cceClusterPhaseValue(cluster: CceCluster | null | undefined): string {
+  if (!cluster) {
+    return "";
   }
-  const clusterIp = cceSelectedClusterExternalIp.value.trim();
-  if (clusterIp) {
-    const matched = cceAccessEips.value.find((item) => cceEipAddress(item) === clusterIp);
-    const matchedId = matched ? cceEipId(matched) : "";
-    if (matchedId) {
-      cceSelectedAccessEipId.value = matchedId;
-      return;
+  const status = cceAsObject(cluster.status);
+  return cceText(status.phase ?? status.clusterPhase ?? status.status);
+}
+
+function cceClusterIsSuccessState(status: string): boolean {
+  const normalized = status.trim().toUpperCase();
+  return (
+    normalized === "AVAILABLE" ||
+    normalized === "ACTIVE" ||
+    normalized === "RUNNING" ||
+    normalized === "NORMAL"
+  );
+}
+
+function cceClusterIsFailureState(status: string): boolean {
+  const normalized = status.trim().toUpperCase();
+  return (
+    normalized === "ERROR" ||
+    normalized === "FAILED" ||
+    normalized === "FAIL" ||
+    normalized === "DELETING_FAILED" ||
+    normalized === "CREATE_FAILED" ||
+    normalized === "UNKNOWN"
+  );
+}
+
+function cceWatchClusterByIdOrName(
+  clusterId: string | null | undefined,
+  clusterName: string | null | undefined
+): CceCluster | null {
+  const normalizedId = cceText(clusterId ?? "");
+  if (normalizedId) {
+    const byId = cceClusters.value.find((cluster) => cceClusterId(cluster) === normalizedId);
+    if (byId) {
+      return byId;
     }
   }
-  cceSelectedAccessEipId.value = cceEipId(cceAccessEips.value[0] ?? {});
+
+  const normalizedName = cceText(clusterName ?? "");
+  if (normalizedName) {
+    const byName = cceClusters.value.find(
+      (cluster) => cceClusterDisplayName(cluster) === normalizedName
+    );
+    if (byName) {
+      return byName;
+    }
+  }
+
+  if (cceSelectedClusterId.value) {
+    const selected = cceClusters.value.find(
+      (cluster) => cceClusterId(cluster) === cceSelectedClusterId.value
+    );
+    if (selected) {
+      return selected;
+    }
+  }
+
+  return cceClusters.value[0] ?? null;
+}
+
+function cceFindClusterByIdOrNameStrict(
+  clusterId: string | null | undefined,
+  clusterName: string | null | undefined
+): CceCluster | null {
+  const normalizedId = cceText(clusterId ?? "");
+  if (normalizedId) {
+    return cceClusters.value.find((cluster) => cceClusterId(cluster) === normalizedId) ?? null;
+  }
+  const normalizedName = cceText(clusterName ?? "");
+  if (normalizedName) {
+    return (
+      cceClusters.value.find((cluster) => cceClusterDisplayName(cluster) === normalizedName) ?? null
+    );
+  }
+  return null;
+}
+
+function stopCcePolling() {
+  if (ccePollingTimer !== null) {
+    window.clearTimeout(ccePollingTimer);
+    ccePollingTimer = null;
+  }
+  ccePolling.value = false;
+}
+
+function startCcePolling(
+  options: {
+    clusterId?: string | null;
+    clusterName?: string | null;
+    mode?: "status" | "create" | "delete";
+  } = {}
+) {
+  stopCcePolling();
+  const targetClusterId = cceText(options.clusterId ?? "");
+  const targetClusterName = cceText(options.clusterName ?? "");
+  const mode = options.mode ?? "status";
+  ccePollingMode.value = mode;
+  ccePolling.value = true;
+  ccePollingAttempts.value = 0;
+  ccePollingStatus.value = null;
+  ccePollingError.value = null;
+  ccePollingTargetLabel.value = targetClusterId || targetClusterName || cceSelectedClusterId.value || null;
+
+  const tick = async () => {
+    if (!ccePolling.value) {
+      return;
+    }
+    ccePollingAttempts.value += 1;
+
+    try {
+      await loadCceClusters({ log: false });
+      const watched =
+        mode === "delete"
+          ? cceFindClusterByIdOrNameStrict(targetClusterId, targetClusterName)
+          : cceWatchClusterByIdOrName(targetClusterId, targetClusterName);
+      const phase = cceClusterPhaseValue(watched);
+      ccePollingStatus.value = phase || (watched ? "UNKNOWN" : null);
+
+      if (mode === "delete") {
+        if (!watched || !cceClusterId(watched)) {
+          ccePollingStatus.value = "DELETED";
+          ccePollingError.value = null;
+          addLog("app", "info", "CCE cluster delete watch complete: cluster no longer listed.");
+          stopCcePolling();
+          return;
+        }
+        ccePollingError.value = null;
+        if (cceClusterIsFailureState(phase)) {
+          addLog("app", "warn", `CCE cluster delete watch reached failure state: ${phase}.`);
+          stopCcePolling();
+          return;
+        }
+      } else if (!watched || !cceClusterId(watched)) {
+        ccePollingError.value = "No CCE clusters found to watch yet.";
+      } else {
+        ccePollingError.value = null;
+        if (cceClusterIsSuccessState(phase)) {
+          addLog("app", "info", `CCE cluster reached ${phase} state.`);
+          stopCcePolling();
+          return;
+        }
+        if (cceClusterIsFailureState(phase)) {
+          addLog("app", "warn", `CCE cluster reached failure state: ${phase}.`);
+          stopCcePolling();
+          return;
+        }
+      }
+    } catch (err) {
+      ccePollingError.value = errorToString(err);
+    }
+
+    if (ccePollingAttempts.value >= POLL_MAX_ATTEMPTS) {
+      stopCcePolling();
+      return;
+    }
+
+    ccePollingTimer = window.setTimeout(tick, POLL_INTERVAL_MS);
+  };
+
+  ccePollingTimer = window.setTimeout(tick, 1000);
+}
+
+function startCceStatusPolling(clusterId: string | null = null) {
+  const normalizedId = cceText(clusterId ?? "");
+  const selected = normalizedId
+    ? cceClusters.value.find((cluster) => cceClusterId(cluster) === normalizedId) ?? null
+    : cceSelectedCluster.value;
+  const targetId = normalizedId || cceSelectedClusterId.value || (selected ? cceClusterId(selected) : "");
+  startCcePolling({
+    clusterId: targetId || null,
+    clusterName: selected ? cceClusterDisplayName(selected) : null,
+    mode: "status",
+  });
 }
 
 function cceKubeconfigFileName(): string {
@@ -1644,6 +2133,96 @@ function extractCceJobId(payload: unknown): string | null {
     status.job_id ?? status.jobId ?? status.jobID ?? data.jobId ?? data.task_id ?? data.taskId
   );
   return nested || null;
+}
+
+function cceClusterExternalIp(cluster: CceCluster): string {
+  const spec = cceAsObject(cluster.spec);
+  return cceText(
+    spec.clusterExternalIP ??
+      spec.clusterExternalIp ??
+      spec.cluster_external_i_p ??
+      spec.cluster_external_ip
+  );
+}
+
+function clearResolvedApiEipBindRequests() {
+  if (!ccePendingApiEipBindClusterIds.value.length) {
+    return;
+  }
+  ccePendingApiEipBindClusterIds.value = ccePendingApiEipBindClusterIds.value.filter(
+    (clusterId) => {
+      const cluster = cceClusters.value.find((item) => cceClusterId(item) === clusterId);
+      if (!cluster) {
+        return false;
+      }
+      return !cceClusterExternalIp(cluster);
+    }
+  );
+}
+
+function cceSubnetAvailabilityZoneById(subnetId: string): string | null {
+  const normalized = subnetId.trim();
+  if (!normalized) {
+    return null;
+  }
+  const subnet = cceSubnets.value.find((item) => item.id === normalized);
+  if (!subnet) {
+    return null;
+  }
+  const zone = (subnet.availability_zone ?? "").trim();
+  return zone || null;
+}
+
+function syncCceNodePoolAvailabilityZone() {
+  const subnetZone = cceSubnetAvailabilityZoneById(cceClusterSubnetId.value);
+  if (subnetZone) {
+    if (cceNodePoolAvailabilityZone.value !== subnetZone) {
+      cceNodePoolAvailabilityZone.value = subnetZone;
+    }
+    return;
+  }
+  const availableZones = cceNodePoolAvailabilityZoneOptions.value;
+  if (!availableZones.length) {
+    return;
+  }
+  if (!availableZones.includes(cceNodePoolAvailabilityZone.value.trim())) {
+    cceNodePoolAvailabilityZone.value = availableZones[0];
+  }
+}
+
+async function loadCceNodePoolFlavors(options: { log?: boolean } = {}) {
+  const shouldLog = options.log ?? true;
+  cceLoadingNodePoolFlavors.value = true;
+  if (shouldLog) {
+    addLog("app", "info", `Listing CCE node flavors for region ${region.value}.`);
+  }
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = { region: region.value };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const data = await invoke<FlavorOption[]>("list_flavors", args);
+    cceNodePoolFlavors.value = data;
+
+    if (!cceNodePoolFlavors.value.some((item) => item.id === cceNodePoolFlavor.value)) {
+      cceNodePoolFlavor.value = cceNodePoolFlavors.value[0]?.id ?? "";
+    }
+
+    if (shouldLog) {
+      addLog(
+        "app",
+        "info",
+        `Loaded ${cceNodePoolFlavors.value.length} CCE node flavor option(s) for region ${region.value}.`
+      );
+    }
+  } catch (err) {
+    const message = `Failed to load CCE node flavors: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceLoadingNodePoolFlavors.value = false;
+  }
 }
 
 async function loadCceVpcs(options: { log?: boolean } = {}) {
@@ -1707,6 +2286,7 @@ async function loadCceSubnets(options: { log?: boolean } = {}) {
     if (!cceSubnets.value.some((item) => item.id === cceClusterSubnetId.value)) {
       cceClusterSubnetId.value = cceSubnets.value[0]?.id ?? "";
     }
+    syncCceNodePoolAvailabilityZone();
   } catch (err) {
     const message = `Failed to load CCE subnets: ${errorToString(err)}`;
     cceErrorMsg.value = message;
@@ -1733,16 +2313,15 @@ async function loadCceClusters(options: { log?: boolean } = {}) {
     cceClusters.value = [...(response.items ?? [])].sort((left, right) =>
       cceClusterDisplayName(left).localeCompare(cceClusterDisplayName(right))
     );
+    clearResolvedApiEipBindRequests();
     if (
       cceSelectedClusterId.value &&
       !cceClusters.value.some((cluster) => cceClusterId(cluster) === cceSelectedClusterId.value)
     ) {
       cceSelectedClusterId.value = "";
       cceNodePools.value = [];
+      cceDeletingNodePoolId.value = null;
       cceAccessEips.value = [];
-      cceSelectedAccessEipId.value = "";
-    } else if (cceSelectedClusterId.value) {
-      syncCceSelectedAccessEip();
     }
     if (shouldLog) {
       addLog(
@@ -1766,9 +2345,14 @@ async function selectCceCluster(clusterId: string) {
     return;
   }
   cceSelectedClusterId.value = normalizedClusterId;
+  const selected =
+    cceClusters.value.find((cluster) => cceClusterId(cluster) === normalizedClusterId) ?? null;
+  if (selected) {
+    cceNodePoolName.value = `${cceClusterDisplayName(selected)}-pool`;
+  }
   cceNodePools.value = [];
+  cceDeletingNodePoolId.value = null;
   cceAccessEips.value = [];
-  cceSelectedAccessEipId.value = "";
   await Promise.all([loadCceNodePools({ log: false }), loadCceAccessEips({ log: false })]);
 }
 
@@ -1797,7 +2381,7 @@ async function loadCceNodePools(options: { log?: boolean } = {}) {
     }
     const response = await invoke<CceNodePoolListResponse>("list_cce_node_pools", args);
     cceNodePools.value = [...(response.items ?? [])].sort((left, right) =>
-      cceNodePoolName(left).localeCompare(cceNodePoolName(right))
+      cceNodePoolDisplayName(left).localeCompare(cceNodePoolDisplayName(right))
     );
     if (shouldLog) {
       addLog(
@@ -1812,6 +2396,179 @@ async function loadCceNodePools(options: { log?: boolean } = {}) {
     addLog("app", "error", message);
   } finally {
     cceLoadingNodePools.value = false;
+  }
+}
+
+async function createCceNodePool() {
+  const clusterId = cceSelectedClusterId.value.trim();
+  if (!clusterId) {
+    cceErrorMsg.value = "Select a CCE cluster before creating a node pool.";
+    return;
+  }
+  const name = cceNodePoolName.value.trim();
+  const flavor = cceNodePoolFlavor.value.trim();
+  const availabilityZone = cceNodePoolAvailabilityZone.value.trim();
+  if (!name) {
+    cceErrorMsg.value = "Node pool name is required.";
+    return;
+  }
+  if (!flavor) {
+    cceErrorMsg.value = "Node pool flavor is required.";
+    return;
+  }
+  if (!availabilityZone) {
+    cceErrorMsg.value = "Availability zone is required.";
+    return;
+  }
+  if (cceNodePoolInitialCount.value < CCE_NODE_POOL_INITIAL_MIN) {
+    cceErrorMsg.value = `Initial nodes must be at least ${CCE_NODE_POOL_INITIAL_MIN}.`;
+    return;
+  }
+  if (
+    cceNodePoolRootVolumeSize.value < CCE_NODE_POOL_ROOT_VOLUME_MIN_GB ||
+    cceNodePoolRootVolumeSize.value > CCE_NODE_POOL_ROOT_VOLUME_MAX_GB
+  ) {
+    cceErrorMsg.value = `Root volume size must be between ${CCE_NODE_POOL_ROOT_VOLUME_MIN_GB} and ${CCE_NODE_POOL_ROOT_VOLUME_MAX_GB} GB.`;
+    return;
+  }
+  if (
+    cceNodePoolDataVolumeSize.value < CCE_NODE_POOL_DATA_VOLUME_MIN_GB ||
+    cceNodePoolDataVolumeSize.value > CCE_NODE_POOL_DATA_VOLUME_MAX_GB
+  ) {
+    cceErrorMsg.value = `Data volume size must be between ${CCE_NODE_POOL_DATA_VOLUME_MIN_GB} and ${CCE_NODE_POOL_DATA_VOLUME_MAX_GB} GB.`;
+    return;
+  }
+  if (
+    cceNodePoolMaxPods.value < CCE_NODE_POOL_MAX_PODS_MIN ||
+    cceNodePoolMaxPods.value > CCE_NODE_POOL_MAX_PODS_MAX
+  ) {
+    cceErrorMsg.value = `Max pods must be between ${CCE_NODE_POOL_MAX_PODS_MIN} and ${CCE_NODE_POOL_MAX_PODS_MAX}.`;
+    return;
+  }
+
+  cceCreatingNodePool.value = true;
+  cceErrorMsg.value = "";
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        clusterId,
+        name,
+        flavor,
+        availabilityZone,
+        subnetId: cceSelectedClusterSubnetId() || null,
+        os: cceNodePoolOs.value.trim() || null,
+        sshKey: cceNodePoolSshKey.value.trim() || null,
+        initialNodeCount: cceNodePoolInitialCount.value,
+        rootVolumeType: cceNodePoolRootVolumeType.value,
+        rootVolumeSize: cceNodePoolRootVolumeSize.value,
+        dataVolumeType: cceNodePoolDataVolumeType.value,
+        dataVolumeSize: cceNodePoolDataVolumeSize.value,
+        maxPods: cceNodePoolMaxPods.value,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    const resultValue = await invoke<CceOperationResult>("create_cce_node_pool", args);
+    cceLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Create CCE node pool ${name}: ${cceResultSummary(resultValue)}`
+    );
+
+    const payload = safeJsonParse(resultValue.body);
+    const jobId = extractCceJobId(payload);
+    if (jobId) {
+      cceLastJobId.value = jobId;
+      await loadCceJob(jobId, { log: false });
+    }
+
+    if (success) {
+      await loadCceNodePools({ log: false });
+      await sendUserNotification(
+        "CCE node pool create accepted",
+        `${name} request submitted for cluster ${clusterId}.`
+      );
+      startCceStatusPolling(clusterId);
+    }
+  } catch (err) {
+    const message = `Failed to create CCE node pool: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceCreatingNodePool.value = false;
+  }
+}
+
+async function deleteCceNodePool(nodePool: CceNodePool) {
+  const clusterId = cceSelectedClusterId.value.trim();
+  if (!clusterId) {
+    cceErrorMsg.value = "Select a CCE cluster before deleting a node pool.";
+    return;
+  }
+  const nodePoolId = cceNodePoolId(nodePool);
+  const nodePoolNameText = cceNodePoolDisplayName(nodePool);
+  if (!nodePoolId) {
+    return;
+  }
+  const confirmed = await showConfirmDialog(
+    `Delete node pool "${nodePoolNameText}" (${nodePoolId}) from cluster ${clusterId}?`,
+    {
+      title: "Delete CCE Node Pool",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    }
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  cceDeletingNodePoolId.value = nodePoolId;
+  cceErrorMsg.value = "";
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        clusterId,
+        nodePoolId,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+    const resultValue = await invoke<CceOperationResult>("delete_cce_node_pool", args);
+    cceLastResult.value = resultValue;
+    const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
+    addLog(
+      "app",
+      success ? "info" : "warn",
+      `Delete CCE node pool ${nodePoolNameText} (${nodePoolId}): ${cceResultSummary(resultValue)}`
+    );
+
+    const payload = safeJsonParse(resultValue.body);
+    const jobId = extractCceJobId(payload);
+    if (jobId) {
+      cceLastJobId.value = jobId;
+      await loadCceJob(jobId, { log: false });
+    }
+
+    if (success) {
+      await loadCceNodePools({ log: false });
+      startCceStatusPolling(clusterId);
+    }
+  } catch (err) {
+    const message = `Failed to delete CCE node pool: ${errorToString(err)}`;
+    cceErrorMsg.value = message;
+    addLog("app", "error", message);
+  } finally {
+    cceDeletingNodePoolId.value = null;
   }
 }
 
@@ -1907,7 +2664,6 @@ async function loadCceAccessEips(options: { log?: boolean } = {}) {
   const clusterId = cceSelectedClusterId.value.trim();
   if (!clusterId) {
     cceAccessEips.value = [];
-    cceSelectedAccessEipId.value = "";
     return;
   }
 
@@ -1931,7 +2687,6 @@ async function loadCceAccessEips(options: { log?: boolean } = {}) {
     cceAccessEips.value = [...(response.publicips ?? [])]
       .filter((item) => !!cceEipId(item))
       .sort((left, right) => cceEipAddress(left).localeCompare(cceEipAddress(right)));
-    syncCceSelectedAccessEip();
     if (shouldLog) {
       addLog("app", "info", `Loaded ${cceAccessEips.value.length} EIP record(s) for CCE access.`);
     }
@@ -1944,41 +2699,47 @@ async function loadCceAccessEips(options: { log?: boolean } = {}) {
   }
 }
 
-async function bindCceClusterApiEip() {
+async function createAndBindCceClusterApiEip() {
   const clusterId = cceSelectedClusterId.value.trim();
   if (!clusterId) {
     cceErrorMsg.value = "Select a CCE cluster before binding an API EIP.";
     return;
   }
-  const selectedId = cceSelectedAccessEipId.value.trim();
-  const selected = cceAccessEips.value.find((item) => cceEipId(item) === selectedId);
-  const eipAddress = selected ? cceEipAddress(selected) : "";
-  if (!eipAddress) {
-    cceErrorMsg.value = "Select a valid EIP with a public address.";
+  if (cceBindingAccessEip.value) {
+    return;
+  }
+  if (cceSelectedClusterExternalIp.value.trim()) {
+    cceErrorMsg.value = "This cluster already has an API EIP bound.";
+    return;
+  }
+  if (ccePendingApiEipBindClusterIds.value.includes(clusterId)) {
+    cceErrorMsg.value =
+      "An API EIP bind request is already in progress for this cluster. Wait for status refresh.";
     return;
   }
 
+  ccePendingApiEipBindClusterIds.value = [...ccePendingApiEipBindClusterIds.value, clusterId];
   cceBindingAccessEip.value = true;
   cceErrorMsg.value = "";
+  let clearPending = true;
   try {
     const credentials = buildCredentialsPayload();
     const args: Record<string, unknown> = {
       params: {
         region: region.value,
         clusterId,
-        eipAddress,
       },
     };
     if (credentials) {
       args.credentials = credentials;
     }
-    const resultValue = await invoke<CceOperationResult>("bind_cce_cluster_api_eip", args);
+    const resultValue = await invoke<CceOperationResult>("create_and_bind_cce_cluster_api_eip", args);
     cceLastResult.value = resultValue;
     const success = resultValue.status_code >= 200 && resultValue.status_code < 300;
     addLog(
       "app",
       success ? "info" : "warn",
-      `Bind CCE API EIP ${eipAddress} to cluster ${clusterId}: ${cceResultSummary(resultValue)}`
+      `Create + bind CCE API EIP for cluster ${clusterId}: ${cceResultSummary(resultValue)}`
     );
 
     const payload = safeJsonParse(resultValue.body);
@@ -1988,18 +2749,24 @@ async function bindCceClusterApiEip() {
       await loadCceJob(jobId, { log: false });
     }
     if (success) {
+      clearPending = false;
       await Promise.all([loadCceClusters({ log: false }), loadCceAccessEips({ log: false })]);
       await sendUserNotification(
-        "CCE API EIP bind submitted",
-        `Cluster API endpoint is updating to ${eipAddress}.`
+        "CCE API EIP create+bind submitted",
+        `Cluster API endpoint update requested for ${clusterId}.`
       );
     }
   } catch (err) {
-    const message = `Failed to bind CCE API EIP: ${errorToString(err)}`;
+    const message = `Failed to create and bind CCE API EIP: ${errorToString(err)}`;
     cceErrorMsg.value = message;
     addLog("app", "error", message);
   } finally {
     cceBindingAccessEip.value = false;
+    if (clearPending) {
+      ccePendingApiEipBindClusterIds.value = ccePendingApiEipBindClusterIds.value.filter(
+        (id) => id !== clusterId
+      );
+    }
   }
 }
 
@@ -2007,6 +2774,10 @@ async function downloadCceKubeconfig() {
   const clusterId = cceSelectedClusterId.value.trim();
   if (!clusterId) {
     cceErrorMsg.value = "Select a CCE cluster before requesting kubeconfig.";
+    return;
+  }
+  if (!cceSelectedClusterExternalIp.value.trim()) {
+    cceErrorMsg.value = "Bind an API EIP before downloading external kubeconfig.";
     return;
   }
 
@@ -2192,6 +2963,7 @@ async function createCceCluster() {
   }
 
   cceCreatingCluster.value = true;
+  stopCcePolling();
   cceErrorMsg.value = "";
   cceLastResult.value = null;
   try {
@@ -2247,6 +3019,11 @@ async function createCceCluster() {
         "CCE cluster create accepted",
         `${clusterName} request submitted in ${region.value}.`
       );
+      startCcePolling({
+        clusterId: targetClusterId || createdClusterId,
+        clusterName,
+        mode: "create",
+      });
     }
   } catch (err) {
     const message = `Failed to create CCE cluster: ${errorToString(err)}`;
@@ -2277,6 +3054,7 @@ async function deleteCceCluster(cluster: CceCluster) {
   }
 
   cceDeletingClusterId.value = clusterId;
+  stopCcePolling();
   cceErrorMsg.value = "";
   try {
     const credentials = buildCredentialsPayload();
@@ -2311,6 +3089,11 @@ async function deleteCceCluster(cluster: CceCluster) {
         cceSelectedClusterId.value = "";
         cceNodePools.value = [];
       }
+      startCcePolling({
+        clusterId,
+        clusterName,
+        mode: "delete",
+      });
     }
   } catch (err) {
     const message = `Failed to delete CCE cluster: ${errorToString(err)}`;
@@ -2367,10 +3150,18 @@ function obsRegionForBucket(bucketName: string): string {
   if (!normalized) {
     return region.value;
   }
-  const bucketRegion = obsBuckets.value
-    .find((bucket) => bucket.name === normalized)
-    ?.location?.trim();
+  const bucketRegion = obsBucketByName.value.get(normalized)?.location?.trim();
   return bucketRegion || region.value;
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
 }
 
 async function encodeFileToBase64(
@@ -2389,16 +3180,17 @@ async function encodeFileToBase64(
       onProgress(Math.min(100, Math.max(0, Math.round((event.loaded / event.total) * 100))));
     };
     reader.onload = () => {
-      const result = typeof reader.result === "string" ? reader.result : "";
-      const marker = "base64,";
-      const markerIndex = result.indexOf(marker);
-      if (markerIndex < 0) {
+      const result = reader.result;
+      if (!(result instanceof ArrayBuffer)) {
         reject(new Error("Could not encode file to base64."));
         return;
       }
-      resolve(result.slice(markerIndex + marker.length));
+      if (onProgress) {
+        onProgress(100);
+      }
+      resolve(uint8ArrayToBase64(new Uint8Array(result)));
     };
-    reader.readAsDataURL(file);
+    reader.readAsArrayBuffer(file);
   });
 }
 
@@ -2550,71 +3342,31 @@ async function loadObsBucketTotals(options: { log?: boolean } = {}) {
     );
   }
 
-  let marker: string | null = null;
-  let totalSizeBytes = 0;
-  let totalObjectCount = 0;
-  let pageCount = 0;
-  const seenMarkers = new Set<string>();
-
   try {
     const credentials = buildCredentialsPayload();
-    while (true) {
-      if (token !== obsBucketTotalsLoadToken || requestedBucket !== obsSelectedBucket.value) {
-        return;
-      }
-
-      pageCount += 1;
-      if (pageCount > OBS_TOTALS_MAX_PAGES) {
-        throw new Error(
-          `Stopped usage scan after ${OBS_TOTALS_MAX_PAGES} pages to avoid an infinite loop.`
-        );
-      }
-
-      const args: Record<string, unknown> = {
-        params: {
-          region: bucketRegion,
-          bucketName: requestedBucket,
-          maxKeys: OBS_MAX_KEYS_MAX,
-          marker,
-          prefix: null,
-        },
-      };
-      if (credentials) {
-        args.credentials = credentials;
-      }
-
-      const response = await invoke<ObsListObjectsResponse>("list_obs_objects", args);
-      if (token !== obsBucketTotalsLoadToken || requestedBucket !== obsSelectedBucket.value) {
-        return;
-      }
-
-      const pageObjects = response.objects ?? [];
-      totalObjectCount += pageObjects.length;
-      for (const object of pageObjects) {
-        const objectSize = Number(object.size ?? 0);
-        if (Number.isFinite(objectSize) && objectSize > 0) {
-          totalSizeBytes += objectSize;
-        }
-      }
-
-      const nextMarker = response.next_marker?.trim() ?? "";
-      if (!(response.is_truncated ?? false) || !nextMarker) {
-        break;
-      }
-      if (seenMarkers.has(nextMarker)) {
-        throw new Error(`OBS pagination repeated marker "${nextMarker}".`);
-      }
-      seenMarkers.add(nextMarker);
-      marker = nextMarker;
+    const args: Record<string, unknown> = {
+      params: {
+        region: bucketRegion,
+        bucketName: requestedBucket,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
     }
 
-    obsBucketTotalSizeBytes.value = totalSizeBytes;
-    obsBucketTotalObjectCount.value = totalObjectCount;
+    // Keep pagination/scanning on the Rust side to avoid large JS loops and IPC churn.
+    const response = await invoke<ObsBucketTotalsResult>("get_obs_bucket_totals", args);
+    if (token !== obsBucketTotalsLoadToken || requestedBucket !== obsSelectedBucket.value) {
+      return;
+    }
+
+    obsBucketTotalSizeBytes.value = Number(response.total_size_bytes ?? 0);
+    obsBucketTotalObjectCount.value = Number(response.total_object_count ?? 0);
     if (shouldLog) {
       addLog(
         "app",
         "info",
-        `OBS usage for ${requestedBucket}: ${formatObsObjectSize(totalSizeBytes)} across ${totalObjectCount} object(s).`
+        `OBS usage for ${requestedBucket}: ${formatObsObjectSize(obsBucketTotalSizeBytes.value)} across ${obsBucketTotalObjectCount.value ?? 0} object(s) in ${response.pages_scanned} page(s).`
       );
     }
   } catch (err) {
@@ -3373,14 +4125,10 @@ function matchesVcpuBucket(flavor: FlavorOption, bucket: string): boolean {
 }
 
 function findEipForServer(serverId: string): EipRecord | null {
-  return (
-    eips.value.find(
-      (eip) =>
-        eip.associate_instance_id === serverId ||
-        eip.vnic?.instance_id === serverId ||
-        eip.vnic?.device_id === serverId
-    ) ?? null
-  );
+  if (!serverId) {
+    return null;
+  }
+  return eipByServerId.value.get(serverId) ?? null;
 }
 
 function evsRole(volume: EvsVolume): "Boot" | "Data" {
@@ -3584,13 +4332,13 @@ function autoUpdateStatusForServer(serverId: string): "queued" | "running" | "do
   if (autoUpdateRunningServerId.value === serverId) {
     return "running";
   }
-  if (autoUpdatePendingServerIds.value.includes(serverId)) {
+  if (autoUpdatePendingSet.value.has(serverId)) {
     return "queued";
   }
-  if (autoUpdateDoneServerIds.value.includes(serverId)) {
+  if (autoUpdateDoneSet.value.has(serverId)) {
     return "done";
   }
-  if (autoUpdateFailedServerIds.value.includes(serverId)) {
+  if (autoUpdateFailedSet.value.has(serverId)) {
     return "failed";
   }
   const config = startupTaskConfigForServer(serverId);
@@ -3642,9 +4390,9 @@ function queueAutoUpdateForServer(serverId: string) {
     return;
   }
   if (
-    autoUpdatePendingServerIds.value.includes(serverId) ||
-    autoUpdateDoneServerIds.value.includes(serverId) ||
-    autoUpdateFailedServerIds.value.includes(serverId)
+    autoUpdatePendingSet.value.has(serverId) ||
+    autoUpdateDoneSet.value.has(serverId) ||
+    autoUpdateFailedSet.value.has(serverId)
   ) {
     return;
   }
@@ -5783,6 +6531,11 @@ function summarizeDeleteResult(response: DeleteEcsResult): string {
   return summary;
 }
 
+function summarizeDeleteOperation(response: DeleteOperationResult): string {
+  const code = response.status_code ?? "n/a";
+  return `${code} ${response.status}`;
+}
+
 function summarizeStopResult(response: StopEcsResult): string {
   const code = response.ecs.status_code ?? 0;
   return `ECS stop: ${code} ${response.ecs.status}`;
@@ -5872,6 +6625,66 @@ async function deleteEcs(ecs: EcsServer) {
     setError(`Delete failed: ${errorToString(err)}`);
   } finally {
     deletingServerId.value = null;
+  }
+}
+
+async function deleteEip(eip: EipRecord) {
+  const eipId = cceEipId(eip);
+  if (!eipId) {
+    return;
+  }
+  if (deletingEipId.value) {
+    return;
+  }
+
+  const address = (eip.public_ip_address ?? "").trim() || eipId;
+  const association = (eip.associate_instance_id ?? "").trim();
+  const warning = association
+    ? ` This EIP is associated with ECS ${association}.`
+    : "";
+  const confirmed = await showConfirmDialog(`Delete EIP "${address}"?${warning}`, {
+    title: "Delete EIP",
+    kind: "warning",
+    okLabel: "Delete",
+    cancelLabel: "Cancel",
+  });
+  if (!confirmed) {
+    return;
+  }
+
+  deletingEipId.value = eipId;
+  errorMsg.value = "";
+  deleteMsg.value = null;
+  addLog("app", "info", `Deleting EIP ${address} (${eipId}).`);
+
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = {
+      params: {
+        region: region.value,
+        eipId,
+      },
+    };
+    if (credentials) {
+      args.credentials = credentials;
+    }
+
+    const response = await invoke<DeleteOperationResult>("delete_eip", args);
+    const summary = summarizeDeleteOperation(response);
+    const success = response.status_code != null && response.status_code >= 200 && response.status_code < 300;
+    deleteMsg.value = `EIP delete ${address}: ${summary}`;
+    addLog("app", success ? "info" : "warn", deleteMsg.value);
+
+    if (success) {
+      if (createdEip.value?.id === eipId) {
+        createdEip.value = null;
+      }
+      await Promise.all([loadEips({ log: false }), loadEcses({ log: false })]);
+    }
+  } catch (err) {
+    setError(`Delete EIP failed: ${errorToString(err)}`);
+  } finally {
+    deletingEipId.value = null;
   }
 }
 
@@ -6088,13 +6901,12 @@ async function createEcs() {
 </script>
 
 <template>
-  <main class="page">
+  <main class="page" :class="{ 'page-mobile': isMobileUi }">
     <header class="topbar">
       <div class="brand">
-        <p class="eyebrow">HC Forge</p>
-        <h1>Cloud Ops Console</h1>
+        <h1>HC Forge</h1>
         <p class="subtitle">
-          Shared credentials across Huawei Cloud services.
+          A toolbox for Huawei Cloud operations.
         </p>
       </div>
       <div class="credentials-card">
@@ -6127,6 +6939,9 @@ async function createEcs() {
             @click="saveCredentials"
           >
             {{ savingCredentials ? "Saving..." : "Save Credentials" }}
+          </button>
+          <button class="ghost minor" type="button" @click="openHuaweiCloudConsole">
+            Go to Console
           </button>
         </div>
       </div>
@@ -6161,488 +6976,84 @@ async function createEcs() {
 
     <Transition :name="moduleTransitionName" mode="out-in">
       <div v-if="activeModule === 'ecs'" key="module-ecs" class="layout">
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Server Inputs</h2>
-          <button class="primary quick-create" :disabled="!canCreate" @click="createEcs">
-            {{ creating ? "Creating..." : "Create" }}
-          </button>
-        </div>
-        <div class="grid inputs-grid">
-          <label class="field region-field">
-            <span>Region</span>
-            <select v-model="region">
-              <option v-for="item in regions" :key="item" :value="item">
-                {{ item }}
-              </option>
-            </select>
-          </label>
-
-          <div class="field">
-            <span>Name</span>
-            <div class="toggle-inline">
-              <input id="custom-name" v-model="useCustomName" type="checkbox" />
-              <label for="custom-name">Use custom name</label>
-            </div>
-            <input
-              v-model="name"
-              :disabled="!useCustomName"
-              placeholder="my-ecs-prod"
-            />
-          </div>
-
-          <div class="field span-2 startup-update-field">
-            <span>Startup Tasks (new VM only)</span>
-            <div class="startup-task-toggles">
-              <div class="toggle-inline">
-                <input id="auto-update-vm" v-model="autoUpdateVmOnStartup" type="checkbox" />
-                <label for="auto-update-vm">Update VM on startup</label>
-              </div>
-              <div class="toggle-inline">
-                <input id="setup-gui-rdp" v-model="setupGuiRdpOnStartup" type="checkbox" />
-                <label for="setup-gui-rdp">Install graphical session + RDP on startup (optional)</label>
-              </div>
-            </div>
-            <div class="startup-tip-box muted tiny">
-              <p>Applies only to newly created VMs. Existing VMs are never changed.</p>
-              <p>For RDP, open inbound TCP 3389 in the security group and log in with the generated <span class="mono">hcforge&lt;random&gt;</span> user shown in ECS cards (password = VM admin password).</p>
-            </div>
-          </div>
-
-          <div class="field span-2">
-            <div class="field-title-row">
-              <span>Image ({{ filteredImages.length }}/{{ images.length }})</span>
-              <ReloadIconButton
-                :disabled="!canListImages"
-                :loading="loadingImages"
-                :title="loadingImages ? 'Reloading images...' : 'Reload images'"
-                @click="loadImages"
-              />
-            </div>
-            <div class="combo">
-              <input v-model="imageSearch" placeholder="Search images..." />
-              <select v-model="imageId">
-                <option value="" disabled>Select an image</option>
-                <option
-                  v-for="image in filteredImages"
-                  :key="image.id"
-                  :value="image.id"
-                >
-                  {{ image.name }} ({{ image.id }})
-                </option>
-              </select>
-            </div>
-          </div>
-
-          <div class="field span-2">
-            <div class="field-title-row">
-              <span>Flavor ({{ filteredFlavors.length }}/{{ flavors.length }})</span>
-              <ReloadIconButton
-                :disabled="!canListFlavors"
-                :loading="loadingFlavors"
-                :title="loadingFlavors ? 'Reloading flavors...' : 'Reload flavors'"
-                @click="loadFlavors"
-              />
-            </div>
-            <div class="combo">
-              <input v-model="flavorSearch" placeholder="Search flavors..." />
-              <div class="inline-pairs">
-                <label class="mini-field">
-                  <span>Architecture</span>
-                  <select v-model="flavorArchFilter">
-                    <option value="all">All</option>
-                    <option
-                      v-for="arch in flavorArchitectureOptions.filter((item) => item !== 'all')"
-                      :key="arch"
-                      :value="arch"
-                    >
-                      {{ arch }}
-                    </option>
-                  </select>
-                </label>
-                <label class="mini-field">
-                  <span>vCPU Bucket</span>
-                  <select v-model="flavorVcpuFilter">
-                    <option value="all">All</option>
-                    <option value="1-2">1-2</option>
-                    <option value="4-8">4-8</option>
-                    <option value="16+">16+</option>
-                  </select>
-                </label>
-              </div>
-              <select v-model="flavorId">
-                <option value="" disabled>Select a flavor</option>
-                <optgroup
-                  v-for="group in flavorGroups"
-                  :key="group.key"
-                  :label="group.label"
-                >
-                  <option
-                    v-for="flavor in group.flavors"
-                    :key="flavor.id"
-                    :value="flavor.id"
-                  >
-                    {{ formatFlavorLabel(flavor) }}
-                  </option>
-                </optgroup>
-              </select>
-            </div>
-            <span v-if="imageMinRam" class="muted tiny">
-              Image requires at least {{ imageMinRam }} MB RAM.
-            </span>
-            <span v-if="!filteredFlavors.length && flavors.length" class="muted tiny">
-              No flavors meet current filters. Adjust architecture, vCPU bucket, or image choice.
-            </span>
-          </div>
-
-          <div class="fold-section span-2">
-            <div class="fold-head">
-              <button
-                class="fold-toggle"
-                type="button"
-                @click="passwordSectionOpen = !passwordSectionOpen"
-              >
-                <span>Administrator Access</span>
-                <span class="fold-state">{{ passwordSectionOpen ? "Hide" : "Show" }}</span>
-              </button>
-              <span v-if="passwordCopyFeedback" class="copy-feedback tiny">
-                {{ passwordCopyFeedback }}
-              </span>
-              <button class="ghost minor action-chip fold-copy" type="button" @click="copyCurrentPassword">
-                Copy Password
-              </button>
-            </div>
-            <transition name="fold">
-              <div v-show="passwordSectionOpen" class="fold-body">
-                <div class="field password-field">
-                  <div class="field-head">
-                    <span>Administrator Password</span>
-                    <button
-                      class="ghost minor"
-                      type="button"
-                      :disabled="!useGeneratedPassword"
-                      @click="regeneratePassword"
-                    >
-                      Regenerate
-                    </button>
-                  </div>
-                  <div class="toggle-inline">
-                    <input
-                      id="generated-password"
-                      v-model="useGeneratedPassword"
-                      type="checkbox"
-                    />
-                    <label for="generated-password">
-                      Use generated password (recommended)
-                    </label>
-                  </div>
-                  <div class="password-input-row">
-                    <input
-                      v-if="useGeneratedPassword"
-                      :value="generatedPassword"
-                      :type="showAdminPassword ? 'text' : 'password'"
-                      readonly
-                      spellcheck="false"
-                    />
-                    <input
-                      v-else
-                      v-model="customPassword"
-                      :type="showAdminPassword ? 'text' : 'password'"
-                      placeholder="Enter your own admin password"
-                      spellcheck="false"
-                    />
-                    <button
-                      class="ghost minor eye-toggle"
-                      type="button"
-                      :aria-label="showAdminPassword ? 'Hide password' : 'Show password'"
-                      @click="showAdminPassword = !showAdminPassword"
-                    >
-                      {{ showAdminPassword ? "🙈" : "👁️" }}
-                    </button>
-                  </div>
-                  <div class="password-actions">
-                    <button class="ghost minor action-chip" type="button" @click="copyCurrentPassword">
-                      Copy Password
-                    </button>
-                    <span class="muted tiny">
-                      {{
-                        passwordCopyFeedback ??
-                        `Must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} chars with upper/lower/number/symbol.`
-                      }}
-                    </span>
-                  </div>
-                  <span v-if="passwordError" class="field-error tiny">
-                    {{ passwordError }}
-                  </span>
-                </div>
-              </div>
-            </transition>
-          </div>
-
-          <div class="fold-section span-2">
-            <button
-              class="fold-toggle"
-              type="button"
-              @click="storageSectionOpen = !storageSectionOpen"
-            >
-              <span>Storage And Public Network</span>
-              <span class="fold-state">{{ storageSectionOpen ? "Hide" : "Show" }}</span>
-            </button>
-            <transition name="fold">
-              <div v-show="storageSectionOpen" class="fold-body">
-                <div class="grid">
-                  <label class="field">
-                    <span>Root Volume Type</span>
-                    <select v-model="rootVolumeType" :disabled="!imageId">
-                      <option value="GPSSD">GPSSD (General Purpose SSD)</option>
-                      <option value="SATA">SATA (Common I/O)</option>
-                      <option value="SAS">SAS (High I/O)</option>
-                      <option value="SSD">Ultra-I/O SSD (Ultra I/O)</option>
-                      <option value="ESSD">ESSD (Extreme SSD)</option>
-                      <option value="GPSSD2">GPSSD2 (General Purpose SSD V2)</option>
-                      <option value="ESSD2">ESSD2 (Extreme SSD V2)</option>
-                    </select>
-                  </label>
-
-                  <div class="field">
-                    <span>Public Network</span>
-                    <div class="toggle-inline">
-                      <input id="eip" v-model="allocateEip" type="checkbox" />
-                      <label for="eip">Allocate public EIP</label>
-                    </div>
-                    <label class="mini-field">
-                      <span>EIP Bandwidth (Mbit/s)</span>
-                      <input
-                        v-model.number="eipBandwidthSize"
-                        type="number"
-                        :min="EIP_BANDWIDTH_MIN_MBIT"
-                        :max="EIP_BANDWIDTH_MAX_MBIT"
-                        step="1"
-                        :disabled="!allocateEip"
-                      />
-                    </label>
-                    <span class="muted tiny">
-                      Charge mode is fixed to traffic. Huawei ECS API allows
-                      {{ EIP_BANDWIDTH_MIN_MBIT }}-{{ EIP_BANDWIDTH_MAX_MBIT }} Mbit/s.
-                    </span>
-                  </div>
-
-                  <div class="field span-2">
-                    <span>Root Volume Size (GB)</span>
-                    <div class="range-row">
-                      <input
-                        v-model.number="rootVolumeSize"
-                        type="range"
-                        :min="imageMinDisk"
-                        max="1024"
-                        step="1"
-                      />
-                      <input
-                        v-model.number="rootVolumeSize"
-                        type="number"
-                        :min="imageMinDisk"
-                        max="1024"
-                      />
-                    </div>
-                    <div class="range-meta">
-                      <span>{{ rootVolumeSize }} GB</span>
-                      <span class="muted">Min {{ imageMinDisk }} GB</span>
-                    </div>
-                  </div>
-
-                  <div class="field span-2">
-                    <span>EVS Data Disk (optional)</span>
-                    <div class="toggle-inline">
-                      <input id="include-data-disk" v-model="includeDataDisk" type="checkbox" />
-                      <label for="include-data-disk">Attach EVS data disk on create</label>
-                    </div>
-                    <div class="inline-pairs">
-                      <label class="mini-field">
-                        <span>Volume Type</span>
-                        <select v-model="dataDiskType" :disabled="!includeDataDisk">
-                          <option value="GPSSD">GPSSD</option>
-                          <option value="SATA">SATA</option>
-                          <option value="SAS">SAS</option>
-                          <option value="SSD">SSD</option>
-                          <option value="ESSD">ESSD</option>
-                          <option value="GPSSD2">GPSSD2</option>
-                          <option value="ESSD2">ESSD2</option>
-                        </select>
-                      </label>
-                      <label class="mini-field">
-                        <span>Size (GB)</span>
-                        <input
-                          v-model.number="dataDiskSize"
-                          type="number"
-                          :min="DATA_DISK_MIN_GB"
-                          :max="DATA_DISK_MAX_GB"
-                          :disabled="!includeDataDisk"
-                        />
-                      </label>
-                      <label class="mini-field">
-                        <span>Count</span>
-                        <input
-                          v-model.number="dataDiskCount"
-                          type="number"
-                          :min="DATA_DISK_MIN_COUNT"
-                          :max="DATA_DISK_MAX_COUNT"
-                          :disabled="!includeDataDisk"
-                        />
-                      </label>
-                      <div class="mini-field">
-                        <span>Flags</span>
-                        <div class="toggle-inline">
-                          <input
-                            id="data-disk-multiattach"
-                            v-model="dataDiskMultiattach"
-                            type="checkbox"
-                            :disabled="!includeDataDisk"
-                          />
-                          <label for="data-disk-multiattach">Shareable (multiattach)</label>
-                        </div>
-                        <div class="toggle-inline">
-                          <input
-                            id="data-disk-scsi"
-                            v-model="dataDiskHwPassthrough"
-                            type="checkbox"
-                            :disabled="!includeDataDisk"
-                          />
-                          <label for="data-disk-scsi">SCSI passthrough</label>
-                        </div>
-                      </div>
-                    </div>
-                    <span class="muted tiny">
-                      Defaults: no data disk attached; when enabled uses {{ DEFAULT_DATA_DISK_SIZE_GB }} GB
-                      GPSSD.
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </transition>
-          </div>
-        </div>
-
-        <div class="fold-section">
-          <button
-            class="fold-toggle"
-            type="button"
-            @click="imageFilterSectionOpen = !imageFilterSectionOpen"
-          >
-            <span>Image Filters</span>
-            <span class="fold-state">{{ imageFilterSectionOpen ? "Hide" : "Show" }}</span>
-          </button>
-          <transition name="fold">
-            <div v-show="imageFilterSectionOpen" class="fold-body">
-              <div class="advanced">
-                <div class="advanced-header">
-                  <span>Image Filters (optional)</span>
-                  <span class="muted tiny">Usually keep defaults.</span>
-                </div>
-                <div class="grid minor-grid">
-                  <label class="field">
-                    <span>Visibility</span>
-                    <select v-model="imageVisibility">
-                      <option value="all">All</option>
-                      <option value="public">Public</option>
-                      <option value="private">Private</option>
-                      <option value="shared">Shared</option>
-                    </select>
-                  </label>
-
-                  <label class="field">
-                    <span>Image Type</span>
-                    <select v-model="imageType">
-                      <option value="all">All</option>
-                      <option value="gold">Gold (Public)</option>
-                      <option value="private">Private</option>
-                      <option value="shared">Shared</option>
-                      <option value="market">Marketplace</option>
-                    </select>
-                  </label>
-                </div>
-              </div>
-            </div>
-          </transition>
-        </div>
-
-        <div class="fold-section">
-          <button
-            class="fold-toggle"
-            type="button"
-            @click="networkSectionOpen = !networkSectionOpen"
-          >
-            <span>Network</span>
-            <span class="fold-state">{{ networkSectionOpen ? "Hide" : "Show" }}</span>
-          </button>
-          <transition name="fold">
-            <div v-show="networkSectionOpen" class="fold-body">
-              <div class="grid">
-                <label class="field">
-                  <div class="field-title-row">
-                    <span>VPC</span>
-                    <ReloadIconButton
-                      :disabled="loadingVpcs"
-                      :loading="loadingVpcs"
-                      :title="loadingVpcs ? 'Reloading VPCs...' : 'Reload VPCs'"
-                      @click="loadVpcs"
-                    />
-                  </div>
-                  <select v-model="selectedVpc">
-                    <option value="" disabled>Select a VPC</option>
-                    <option v-for="vpc in vpcs" :key="vpc.id" :value="vpc.id">
-                      {{ vpc.name }}
-                    </option>
-                  </select>
-                </label>
-
-                <label class="field">
-                  <div class="field-title-row">
-                    <span>Subnet</span>
-                    <ReloadIconButton
-                      :disabled="!canLoadSubnets"
-                      :loading="loadingSubnets"
-                      :title="loadingSubnets ? 'Reloading subnets...' : 'Reload subnets'"
-                      @click="loadSubnets"
-                    />
-                  </div>
-                  <select v-model="selectedSubnet">
-                    <option value="" disabled>Select a subnet</option>
-                    <option
-                      v-for="subnet in subnets"
-                      :key="subnet.id"
-                      :value="subnet.id"
-                    >
-                      {{ subnet.name }} ({{ subnet.cidr }})
-                    </option>
-                  </select>
-                </label>
-              </div>
-            </div>
-          </transition>
-        </div>
-
-        <div class="actions minor-actions">
-          <button class="ghost minor" :disabled="loadingAll" @click="loadAll">
-            {{ loadingAll ? "Reloading All..." : "Reload All" }}
-          </button>
-        </div>
-
-        <div class="bottom-create-row">
-          <button class="primary cta bottom-create" :disabled="!canCreate" @click="createEcs">
-            {{ creating ? "Creating..." : "Create" }}
-          </button>
-        </div>
-
-        <p class="muted" v-if="loadingAll">
-          Reloading images, flavors, VPCs, subnets, ECSes, EIPs, and EVS disks...
-        </p>
-        <p class="muted tiny" v-else>
-          Images: {{ images.length }} ({{ cacheAge.images }}) • Flavors:
-          {{ flavors.length }} ({{ cacheAge.flavors }}) • VPCs: {{ vpcs.length }}
-          ({{ cacheAge.vpcs }}) • Subnets: {{ subnets.length }} ({{ cacheAge.subnets }}) • EVS:
-          {{ evss.length }} ({{ cacheAge.evss }})
-        </p>
-      </section>
+      <EcsInputsPanel
+        v-model:region="region"
+        v-model:use-custom-name="useCustomName"
+        v-model:name="name"
+        v-model:auto-update-vm-on-startup="autoUpdateVmOnStartup"
+        v-model:setup-gui-rdp-on-startup="setupGuiRdpOnStartup"
+        v-model:image-search="imageSearch"
+        v-model:image-id="imageId"
+        v-model:flavor-search="flavorSearch"
+        v-model:flavor-arch-filter="flavorArchFilter"
+        v-model:flavor-vcpu-filter="flavorVcpuFilter"
+        v-model:flavor-id="flavorId"
+        v-model:password-section-open="passwordSectionOpen"
+        v-model:use-generated-password="useGeneratedPassword"
+        v-model:custom-password="customPassword"
+        v-model:show-admin-password="showAdminPassword"
+        v-model:storage-section-open="storageSectionOpen"
+        v-model:root-volume-type="rootVolumeType"
+        v-model:allocate-eip="allocateEip"
+        v-model:eip-bandwidth-size="eipBandwidthSize"
+        v-model:root-volume-size="rootVolumeSize"
+        v-model:include-data-disk="includeDataDisk"
+        v-model:data-disk-type="dataDiskType"
+        v-model:data-disk-size="dataDiskSize"
+        v-model:data-disk-count="dataDiskCount"
+        v-model:data-disk-multiattach="dataDiskMultiattach"
+        v-model:data-disk-hw-passthrough="dataDiskHwPassthrough"
+        v-model:image-filter-section-open="imageFilterSectionOpen"
+        v-model:image-visibility="imageVisibility"
+        v-model:image-type="imageType"
+        v-model:network-section-open="networkSectionOpen"
+        v-model:selected-vpc="selectedVpc"
+        v-model:selected-subnet="selectedSubnet"
+        :regions="regions"
+        :can-create="canCreate"
+        :creating="creating"
+        :filtered-images="filteredImages"
+        :images="images"
+        :can-list-images="canListImages"
+        :loading-images="loadingImages"
+        :filtered-flavors="filteredFlavors"
+        :flavors="flavors"
+        :can-list-flavors="canListFlavors"
+        :loading-flavors="loadingFlavors"
+        :flavor-architecture-options="flavorArchitectureOptions"
+        :flavor-groups="flavorGroups"
+        :format-flavor-label="formatFlavorLabel"
+        :image-min-ram="imageMinRam"
+        :password-copy-feedback="passwordCopyFeedback"
+        :generated-password="generatedPassword"
+        :password-error="passwordError"
+        :password-min-length="PASSWORD_MIN_LENGTH"
+        :password-max-length="PASSWORD_MAX_LENGTH"
+        :eip-bandwidth-min="EIP_BANDWIDTH_MIN_MBIT"
+        :eip-bandwidth-max="EIP_BANDWIDTH_MAX_MBIT"
+        :image-min-disk="imageMinDisk"
+        :data-disk-default-size="DEFAULT_DATA_DISK_SIZE_GB"
+        :data-disk-min="DATA_DISK_MIN_GB"
+        :data-disk-max="DATA_DISK_MAX_GB"
+        :data-disk-min-count="DATA_DISK_MIN_COUNT"
+        :data-disk-max-count="DATA_DISK_MAX_COUNT"
+        :loading-vpcs="loadingVpcs"
+        :loading-subnets="loadingSubnets"
+        :can-load-subnets="canLoadSubnets"
+        :vpcs="vpcs"
+        :subnets="subnets"
+        :loading-all="loadingAll"
+        :cache-age="cacheAge"
+        :evss-length="evss.length"
+        @create="createEcs"
+        @load-images="loadImages"
+        @load-flavors="loadFlavors"
+        @regenerate-password="regeneratePassword"
+        @copy-current-password="copyCurrentPassword"
+        @load-vpcs="loadVpcs"
+        @load-subnets="loadSubnets"
+        @load-all="loadAll"
+      />
 
       <EcsResponsePanel
         :quick-copy-feedback="quickCopyFeedback"
@@ -6665,6 +7076,7 @@ async function createEcs() {
         :loading-eips="loadingEips"
         :loading-evss="loadingEvss"
         :loading-ecses="loadingEcses"
+        :deleting-eip-id="deletingEipId"
         :cache-age-eips="cacheAge.eips"
         :cache-age-evss="cacheAge.evss"
         :cache-age-ecses="cacheAge.ecses"
@@ -6699,6 +7111,7 @@ async function createEcs() {
         :ssh-button-label="sshButtonLabel"
         :can-stop-ecs="canStopEcs"
         :stop-ecs="stopEcs"
+        :delete-eip="deleteEip"
         :delete-ecs="deleteEcs"
         :start-polling="startPolling"
         :stop-polling="stopPolling"
@@ -6802,9 +7215,23 @@ async function createEcs() {
         v-model:nat-gateway-name="cceNatGatewayName"
         v-model:nat-gateway-description="cceNatGatewayDescription"
         v-model:nat-gateway-spec="cceNatGatewaySpec"
-        v-model:selected-access-eip-id="cceSelectedAccessEipId"
+        v-model:node-pool-name="cceNodePoolName"
+        v-model:node-pool-flavor="cceNodePoolFlavor"
+        v-model:node-pool-availability-zone="cceNodePoolAvailabilityZone"
+        v-model:node-pool-os="cceNodePoolOs"
+        v-model:node-pool-ssh-key="cceNodePoolSshKey"
+        v-model:node-pool-initial-count="cceNodePoolInitialCount"
+        v-model:node-pool-root-volume-type="cceNodePoolRootVolumeType"
+        v-model:node-pool-root-volume-size="cceNodePoolRootVolumeSize"
+        v-model:node-pool-data-volume-type="cceNodePoolDataVolumeType"
+        v-model:node-pool-data-volume-size="cceNodePoolDataVolumeSize"
+        v-model:node-pool-max-pods="cceNodePoolMaxPods"
         :cluster-versions="CCE_KUBERNETES_VERSIONS"
         :cluster-flavors="CCE_CONTROL_PLANE_FLAVORS"
+        :node-pool-flavor-options="cceNodePoolFlavorOptions"
+        :node-pool-availability-zones="cceNodePoolAvailabilityZoneOptions"
+        :node-pool-os-options="CCE_NODE_OS_OPTIONS"
+        :node-volume-types="CCE_NODE_VOLUME_TYPES"
         :nat-gateway-specs="CCE_NAT_GATEWAY_SPECS"
         :container-network-cidrs="CCE_CONTAINER_NETWORK_CIDR_OPTIONS"
         :service-cidrs="CCE_SERVICE_CIDR_OPTIONS"
@@ -6823,11 +7250,22 @@ async function createEcs() {
         :selected-cluster-id="cceSelectedClusterId"
         :deleting-cluster-id="cceDeletingClusterId"
         :node-pools="cceNodePools"
+        :loading-node-pool-flavors="cceLoadingNodePoolFlavors"
         :loading-node-pools="cceLoadingNodePools"
+        :can-create-node-pool="cceCanCreateNodePool"
+        :creating-node-pool="cceCreatingNodePool"
+        :deleting-node-pool-id="cceDeletingNodePoolId"
         :last-result="cceLastResult"
         :job-result="cceJobResult"
         :last-job-id="cceLastJobId"
         :loading-job="cceLoadingJob"
+        :polling-cce="ccePolling"
+        :polling-attempts="ccePollingAttempts"
+        :poll-max-attempts="POLL_MAX_ATTEMPTS"
+        :polling-status="ccePollingStatus"
+        :polling-error="ccePollingError"
+        :polling-target-label="ccePollingTargetLabel"
+        :can-watch="cceCanWatch"
         :nat-gateways="cceNatGateways"
         :loading-nat-gateways="cceLoadingNatGateways"
         :can-create-nat-gateway="cceCanCreateNatGateway"
@@ -6837,6 +7275,7 @@ async function createEcs() {
         :loading-access-eips="cceLoadingAccessEips"
         :selected-cluster-external-ip="cceSelectedClusterExternalIp"
         :binding-access-eip="cceBindingAccessEip"
+        :api-eip-bind-requested="cceSelectedClusterApiEipBindRequested"
         :downloading-kubeconfig="cceDownloadingKubeconfig"
         :error-msg="cceErrorMsg"
         :quick-copy-feedback="quickCopyFeedback"
@@ -6846,13 +7285,18 @@ async function createEcs() {
         @reload-clusters="loadCceClusters()"
         @select-cluster="selectCceCluster"
         @delete-cluster="deleteCceCluster"
+        @start-polling="startCceStatusPolling"
+        @stop-polling="stopCcePolling"
         @reload-node-pools="loadCceNodePools()"
+        @reload-node-pool-flavors="loadCceNodePoolFlavors()"
+        @create-node-pool="createCceNodePool"
+        @delete-node-pool="deleteCceNodePool"
         @reload-job="loadCceJob()"
         @reload-nat-gateways="loadCceNatGateways()"
         @create-nat-gateway="createCceNatGateway"
         @delete-nat-gateway="deleteCceNatGateway"
         @reload-access-eips="loadCceAccessEips()"
-        @bind-cluster-access-eip="bindCceClusterApiEip"
+        @create-bind-cluster-access-eip="createAndBindCceClusterApiEip"
         @download-kubeconfig="downloadCceKubeconfig"
       />
 
@@ -6925,7 +7369,17 @@ async function createEcs() {
           </div>
           <p class="dialog-message">{{ confirmDialog.message }}</p>
           <div class="dialog-actions">
-            <button class="ghost minor danger" type="button" @click="closeConfirmDialog(true)">
+            <TrashIconButton
+              v-if="confirmDialogUsesDeleteIcon"
+              title="Confirm delete"
+              @click="closeConfirmDialog(true)"
+            />
+            <button
+              v-else
+              class="ghost minor danger"
+              type="button"
+              @click="closeConfirmDialog(true)"
+            >
               {{ confirmDialog.okLabel }}
             </button>
             <button class="ghost minor" type="button" @click="closeConfirmDialog(false)">
