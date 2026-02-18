@@ -93,10 +93,26 @@ mod tests {
     }
 
     #[test]
+    fn normalize_obs_bucket_name_enforces_length_bounds() {
+        assert!(normalize_obs_bucket_name("ab", OBS_BUCKET_MIN, OBS_BUCKET_MAX).is_err());
+        let long_name = "a".repeat(OBS_BUCKET_MAX + 1);
+        assert!(normalize_obs_bucket_name(&long_name, OBS_BUCKET_MIN, OBS_BUCKET_MAX).is_err());
+        let min_ok = "abc";
+        assert_eq!(
+            normalize_obs_bucket_name(min_ok, OBS_BUCKET_MIN, OBS_BUCKET_MAX).expect("min len"),
+            min_ok
+        );
+    }
+
+    #[test]
     fn normalize_obs_object_key_trims_leading_slashes() {
         assert_eq!(
             normalize_obs_object_key("/logs/app.log").expect("key"),
             "logs/app.log"
+        );
+        assert_eq!(
+            normalize_obs_object_key("///nested/path.txt").expect("key"),
+            "nested/path.txt"
         );
     }
 
@@ -122,6 +138,7 @@ mod tests {
     #[test]
     fn control_char_from_input_maps_supported_shortcuts() {
         assert_eq!(control_char_from_input("ctrl+c").expect("ctrl+c"), 0x03);
+        assert_eq!(control_char_from_input("c").expect("c"), 0x03);
         assert_eq!(control_char_from_input("D").expect("d"), 0x04);
         assert_eq!(control_char_from_input(" Ctrl+U ").expect("ctrl+u"), 0x15);
     }

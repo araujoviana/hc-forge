@@ -1,39 +1,29 @@
 # HC Forge
 
-Desktop Cloud Ops console for Huawei Cloud ECS workflows, built with Tauri + Vue + TypeScript.
+HC Forge is a desktop toolbox for Huawei Cloud operations built with Tauri, Vue 3, TypeScript, and Rust.
 
-## What It Does
+## What It Covers
 
-- Creates ECS instances with image/flavor/VPC/subnet/root volume selections.
-- Optionally allocates EIP during create.
-- Supports optional EVS data disks on create (`GPSSD` default, `100GB` default when enabled).
-- Lists ECS instances, EIPs, and EVS disks in card/list format (no horizontal table scrolling).
-- Includes integrated SSH terminal controls (interactive shell + Ctrl+C/Ctrl+D/Ctrl+U shortcuts).
-- Supports startup task automation for newly created VMs:
-  - `Update VM on startup`
-  - `Setup GUI + RDP on startup` (installs XFCE + XRDP stack using detected package manager)
-- Streams startup task progress into UI/logs, including percent markers.
-- Sends desktop notifications when:
-  - ECS create request succeeds.
-  - Startup tasks complete/fail.
-- Persists encrypted per-VM SSH passwords locally (Tauri store) so SSH shortcuts continue working after restart.
+- ECS create and lifecycle operations
+- EIP and EVS listing and management
+- Integrated SSH terminal and startup task automation
+- Platform Ops helpers for Docker, Minikube, and Nix
+- CCE cluster, node pool, NAT, and access workflows
+- OBS bucket and object management
 
-## Tech Stack
+## Stack
 
 - Frontend: Vue 3 + TypeScript + Vite
 - Desktop runtime: Tauri v2
-- Backend: Rust (Huawei Cloud signed API client + SSH via `russh`)
-- Storage: `@tauri-apps/plugin-store`
-- Notifications: `@tauri-apps/plugin-notification`
+- Backend: Rust with signed Huawei Cloud API requests
+- Local storage: Tauri Store plugin
 
-## Requirements
+## Prerequisites
 
-- Node.js 20+
-- pnpm 9+
+- Node.js 20 or newer
+- pnpm 9 or newer
 - Rust stable toolchain
-- OS build prerequisites for Tauri:
-  - Linux: GTK/WebKit2GTK build deps
-  - Windows: MSVC Build Tools + WebView2 runtime
+- Platform build dependencies required by Tauri
 
 ## Development
 
@@ -44,41 +34,30 @@ pnpm tauri dev
 
 ## Build
 
-Frontend build:
-
 ```bash
 pnpm build
-```
-
-Rust tests:
-
-```bash
-pnpm test:rust
-```
-
-Bundle desktop app:
-
-```bash
 pnpm tauri build
 ```
 
-Artifacts are generated under `src-tauri/target/release/bundle`.
+## Test
 
-## Packaging Targets
+```bash
+pnpm test:frontend
+pnpm test:rust
+```
 
-This project is set up to eventually produce executables/installers for Linux and Windows through Tauri bundling.
+## Project Layout
 
-- Linux: AppImage / deb / rpm (depending on host setup)
-- Windows: MSI / NSIS / EXE (depending on bundle config and host setup)
-
-Cross-compiling Windows binaries from Linux typically requires additional toolchain setup. For reliable output, build on the target OS.
+- `src/`: Vue application, components, shared types, utilities
+- `src-tauri/src/`: Rust commands, API client, validators, and tests
+- `src/utils/platformOps.js`: command builders and parsers for Platform Ops
 
 ## Security Notes
 
-- AK/SK credentials are stored locally via Tauri Store.
-- VM passwords are persisted per-server in encrypted form using Web Crypto (`AES-GCM` with PBKDF2-derived key from local credentials).
-- Keep local workstation access restricted since secrets remain decryptable by this app environment.
+- Credentials are stored locally through Tauri Store.
+- VM passwords are encrypted before local persistence.
+- Use least-privilege IAM credentials for daily operations.
 
-## Current Scope
+## License
 
-HC Forge currently focuses on ECS lifecycle + SSH operations and supporting network/storage resources in a single desktop workflow.
+MIT. See `LICENSE`.

@@ -15,6 +15,7 @@ import {
   parseDockerfileTemplate,
   parseDockerContainers,
   parseDockerImages,
+  shellSingleQuote,
 } from "./platformOps.js";
 
 test("platformOps command builders and parsers behave as expected", () => {
@@ -148,8 +149,41 @@ test("platformOps command builders and parsers behave as expected", () => {
   assert.equal(parsedNixLines.length, 3);
   assert.equal(parsedNixLines[0].name, "git");
   assert.equal(parsedNixLines[0].version, "2.47.0");
-  assert.equal(parsedNixLines[2].version, "—");
+  assert.equal(parsedNixLines[2].version, "\u2014");
 
   const parsedMissingNix = parseNixPackages("nix is not installed.");
   assert.equal(parsedMissingNix.length, 0);
+});
+
+test("parsers and quoting handle malformed input safely", () => {
+  const quoted = shellSingleQuote("can't break");
+  assert.equal(quoted, `'can'"'"'t break'`);
+
+  const mixedImageOutput = [
+    '{"Repository":"nginx","Tag":"latest","ID":"sha256:123","CreatedSince":"2 weeks ago","Size":"187MB"}',
+    "not-json-line",
+    '{"Repository":"busybox","Tag":"stable","ID":"sha256:999","CreatedSince":"1 day ago","Size":"3MB"}',
+  ].join("\n");
+  const parsedImages = parseDockerImages(mixedImageOutput);
+  assert.equal(parsedImages.length, 2);
+  assert.equal(parsedImages[1].repository, "busybox");
+
+  const parsedFallbackDockerfile = parseDockerfileTemplate("CMD python app.py");
+  assert.equal(parsedFallbackDockerfile.baseImage, undefined);
+  assert.equal(parsedFallbackDockerfile.startCommand, "python app.py");
+
+  const mapStyleNix = parseNixPackages(
+    JSON.stringify({
+      itemA: { attrPath: "legacyPackages.x86_64-linux.git", version: "2.47.0" },
+      itemB: { name: "ripgrep", version: "14.1.0" },
+    })
+  );
+  assert.equal(mapStyleNix.length, 2);
+  assert.equal(mapStyleNix[0].name, "git");
+  assert.equal(mapStyleNix[1].name, "ripgrep");
+
+  const sanitizedPackages = buildNixSetupCommand({
+    packages: "git rm -rf /,ripgrep;cat /etc/passwd",
+  });
+  assert.match(sanitizedPackages, /NIX_PACKAGES='git rm -rf ripgrepcat etcpasswd'/);
 });
