@@ -196,10 +196,46 @@ jobs:
       - name: Build Android APK
         run: pnpm tauri android build --ci --apk --target aarch64
 
-      - name: Collect Android artifacts
+      - name: Collect and sign Android APK artifacts
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           mkdir -p release
-          find src-tauri/gen/android/app/build/outputs -type f \( -name "*.apk" -o -name "*.aab" \) -exec cp {} release/ \;
+          BUILD_TOOLS_DIR="$(ls -1d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+          if [ ! -x "$APKSIGNER" ]; then
+            echo "::error::apksigner not found at $APKSIGNER"
+            exit 1
+          fi
+
+          find src-tauri/gen/android/app/build/outputs -type f -name "*.apk" | while read -r apk; do
+            file_name="$(basename "$apk")"
+            if [[ "$file_name" == *-unsigned.apk ]]; then
+              signed_name="${file_name%-unsigned.apk}.apk"
+              signed_path="release/$signed_name"
+              "$APKSIGNER" sign \
+                --ks "$RUNNER_TEMP/release-keystore.jks" \
+                --ks-key-alias "$ANDROID_KEY_ALIAS" \
+                --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+                --key-pass "pass:$ANDROID_KEY_PASSWORD" \
+                --out "$signed_path" \
+                "$apk"
+              "$APKSIGNER" verify --verbose "$signed_path"
+            else
+              cp "$apk" "release/$file_name"
+              "$APKSIGNER" verify --verbose "release/$file_name" || true
+            fi
+          done
+
+          signed_count="$(find release -type f -name "*.apk" ! -name "*-unsigned.apk" | wc -l | tr -d ' ')"
+          if [ "$signed_count" -eq 0 ]; then
+            echo "::error::No signed APK produced. Refusing to publish unsigned APKs."
+            exit 1
+          fi
+
+          find release -type f -name "*-unsigned.apk" -delete
           ls -la release
 
       - name: Upload Android artifacts
