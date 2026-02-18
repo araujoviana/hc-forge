@@ -4,6 +4,12 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      build_android:
+        description: Build signed Android APK (requires Android signing secrets)
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -119,7 +125,7 @@ jobs:
   build-android:
     name: Build Android (APK)
     runs-on: ubuntu-22.04
-    if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
+    if: ${{ github.event_name == 'release' || inputs.build_android }}
 
     steps:
       - name: Checkout
@@ -149,6 +155,22 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Validate Android signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=0
+          [ -n "$ANDROID_KEYSTORE_BASE64" ] || { echo "::error::Missing secret ANDROID_KEYSTORE_BASE64"; missing=1; }
+          [ -n "$ANDROID_KEYSTORE_PASSWORD" ] || { echo "::error::Missing secret ANDROID_KEYSTORE_PASSWORD"; missing=1; }
+          [ -n "$ANDROID_KEY_ALIAS" ] || { echo "::error::Missing secret ANDROID_KEY_ALIAS"; missing=1; }
+          [ -n "$ANDROID_KEY_PASSWORD" ] || { echo "::error::Missing secret ANDROID_KEY_PASSWORD"; missing=1; }
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
