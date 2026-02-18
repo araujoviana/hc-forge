@@ -55,16 +55,43 @@ const IAM_PROJECTS_PATH: &str = "/v3/auth/projects";
 const PROJECT_ID_CACHE_MAX_CAPACITY: u64 = 256;
 const PROJECT_ID_CACHE_TTL_SECS: u64 = 900;
 
-// Reuse sockets/TLS sessions across commands instead of creating one reqwest client per call.
-static SHARED_HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
-    Client::builder()
+#[cfg(target_os = "android")]
+fn android_tls_root_certs() -> Vec<reqwest::Certificate> {
+    webpki_root_certs::TLS_SERVER_ROOT_CERTS
+        .iter()
+        .map(|cert| {
+            reqwest::Certificate::from_der(cert.as_ref())
+                .expect("failed to parse embedded webpki root certificate")
+        })
+        .collect()
+}
+
+fn build_shared_http_client() -> Client {
+    let builder = Client::builder()
         .pool_idle_timeout(Some(Duration::from_secs(90)))
         .pool_max_idle_per_host(16)
         .tcp_keepalive(Some(Duration::from_secs(60)))
-        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(25));
+
+    #[cfg(target_os = "android")]
+    let builder = {
+        // Avoid Android verifier setup requirements by pinning to embedded Mozilla roots.
+        let certs = android_tls_root_certs();
+        debug!(
+            "Configuring reqwest Android TLS with {} embedded root certificates",
+            certs.len()
+        );
+        builder.tls_certs_only(certs)
+    };
+
+    builder
         .build()
         .expect("failed to build shared reqwest client")
-});
+}
+
+// Reuse sockets/TLS sessions across commands instead of creating one reqwest client per call.
+static SHARED_HTTP_CLIENT: LazyLock<Client> = LazyLock::new(build_shared_http_client);
 
 // AK + region -> project_id cache to avoid repeated IAM lookups for hot paths.
 static PROJECT_ID_CACHE: LazyLock<Cache<String, String>> = LazyLock::new(|| {

@@ -483,8 +483,8 @@ const selectedSubnetModel = computed({
         </button>
         <transition name="fold">
           <div v-if="storageSectionOpenModel" class="fold-body">
-            <div class="grid">
-              <label class="field">
+            <div class="grid storage-network-grid">
+              <label class="field storage-root-type-field">
                 <span>Root Volume Type</span>
                 <select v-model="rootVolumeTypeModel" :disabled="!imageIdModel">
                   <option value="GPSSD">GPSSD (General Purpose SSD)</option>
@@ -497,7 +497,7 @@ const selectedSubnetModel = computed({
                 </select>
               </label>
 
-              <div class="field">
+              <div class="field storage-public-network-field">
                 <span>Public Network</span>
                 <div class="toggle-inline">
                   <input id="eip" v-model="allocateEipModel" type="checkbox" />

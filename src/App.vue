@@ -122,6 +122,10 @@ const RELATIVE_TIME_TICK_MS = 30000;
 const MAX_LOG_ENTRIES = 350;
 const SEARCH_INPUT_DEBOUNCE_MS = 160;
 const IMAGE_FILTER_RELOAD_DEBOUNCE_MS = 220;
+const CREDENTIALS_APPLY_DEBOUNCE_MS = 260;
+const LOAD_STATE_LOG_DEBOUNCE_MS = 180;
+const INVOKE_TIMEOUT_DESKTOP_MS = 30000;
+const INVOKE_TIMEOUT_MOBILE_MS = 15000;
 const MOBILE_LAYOUT_BREAKPOINT_PX = 980;
 const MOBILE_LOG_ENTRY_LIMIT = 200;
 const HUAWEI_CLOUD_CONSOLE_URL = "https://console.huaweicloud.com/";
@@ -281,6 +285,7 @@ const loadingEips = ref(false);
 const loadingEvss = ref(false);
 const loadingEcses = ref(false);
 const savingCredentials = ref(false);
+const probingCredentials = ref(false);
 const loadingAll = ref(false);
 const loadingResponse = ref(false);
 const creating = ref(false);
@@ -485,6 +490,8 @@ let ccePollingTimer: number | null = null;
 let imageSearchDebounceTimer: number | null = null;
 let flavorSearchDebounceTimer: number | null = null;
 let imageFilterReloadTimer: number | null = null;
+let credentialsApplyDebounceTimer: number | null = null;
+let loadStateLogTimer: number | null = null;
 let passwordFeedbackTimer: number | null = null;
 let quickCopyFeedbackTimer: number | null = null;
 let relativeClockTimer: number | null = null;
@@ -1055,6 +1062,40 @@ watch(
   { immediate: true }
 );
 
+// When credentials become available, trigger an eager data reload so selects populate automatically.
+watch([accessKey, secretKey], ([nextAk, nextSk], [prevAk, prevSk]) => {
+  const hasCurrentCredentials = !!nextAk.trim() && !!nextSk.trim();
+  const hadPreviousCredentials = !!prevAk.trim() && !!prevSk.trim();
+  if (!hasCurrentCredentials || hadPreviousCredentials) {
+    return;
+  }
+
+  if (credentialsApplyDebounceTimer !== null) {
+    window.clearTimeout(credentialsApplyDebounceTimer);
+  }
+  credentialsApplyDebounceTimer = window.setTimeout(() => {
+    void loadAll();
+  }, CREDENTIALS_APPLY_DEBOUNCE_MS);
+});
+
+watch(
+  [
+    storeReady,
+    region,
+    loadingAll,
+    loadingImages,
+    loadingFlavors,
+    loadingVpcs,
+    loadingSubnets,
+    loadingEips,
+    loadingEvss,
+    loadingEcses,
+  ],
+  () => {
+    scheduleReloadGateStateLog("gate-change");
+  }
+);
+
 // Region switch invalidates service-scoped state and in-flight polling contexts.
 watch(region, async () => {
   stopPolling();
@@ -1342,6 +1383,60 @@ function addLog(source: LogSource, level: LogLevelName, message: string) {
   }
 }
 
+function hasCredentialsInput(): boolean {
+  return !!accessKey.value.trim() && !!secretKey.value.trim();
+}
+
+function logReloadGateState(reason: string) {
+  addLog(
+    "app",
+    "info",
+    `state ${reason} store=${storeReady.value ? 1 : 0} creds=${hasCredentialsInput() ? 1 : 0} region=${region.value || "-"} all=${loadingAll.value ? 1 : 0} img=${loadingImages.value ? 1 : 0} flv=${loadingFlavors.value ? 1 : 0} vpc=${loadingVpcs.value ? 1 : 0} sn=${loadingSubnets.value ? 1 : 0} eip=${loadingEips.value ? 1 : 0} evs=${loadingEvss.value ? 1 : 0} ecs=${loadingEcses.value ? 1 : 0}`
+  );
+}
+
+function scheduleReloadGateStateLog(reason: string) {
+  if (loadStateLogTimer !== null) {
+    window.clearTimeout(loadStateLogTimer);
+  }
+  loadStateLogTimer = window.setTimeout(() => {
+    logReloadGateState(reason);
+    loadStateLogTimer = null;
+  }, LOAD_STATE_LOG_DEBOUNCE_MS);
+}
+
+async function invokeWithNetLog<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  const startedAt = Date.now();
+  const timeoutMs = isMobileUi.value ? INVOKE_TIMEOUT_MOBILE_MS : INVOKE_TIMEOUT_DESKTOP_MS;
+  let timeoutId: number | null = null;
+  addLog("app", "info", `net>${command}`);
+  try {
+    const invokeOutcome = invoke<T>(command, args)
+      .then((value) => ({ kind: "ok" as const, value }))
+      .catch((error) => ({ kind: "err" as const, error }));
+    const timeoutOutcome = new Promise<{ kind: "timeout" }>((resolve) => {
+      timeoutId = window.setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+    });
+    const outcome = await Promise.race([invokeOutcome, timeoutOutcome]);
+    if (outcome.kind === "timeout") {
+      throw new Error(`Request timeout after ${timeoutMs}ms for ${command}`);
+    }
+    if (outcome.kind === "err") {
+      throw outcome.error;
+    }
+    const output = outcome.value;
+    addLog("app", "info", `net<${command} ok ${Date.now() - startedAt}ms`);
+    return output;
+  } catch (err) {
+    addLog("app", "warn", `net<${command} fail ${Date.now() - startedAt}ms (${errorToString(err)})`);
+    throw err;
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+}
+
 function syncMobileUiProfile() {
   if (typeof window !== "undefined") {
     isMobileViewport.value = window.innerWidth <= MOBILE_LAYOUT_BREAKPOINT_PX;
@@ -1466,6 +1561,7 @@ onMounted(() => {
     isMobileOs.value = false;
   }
   syncMobileUiProfile();
+  logReloadGateState("mounted");
   viewportResizeListener = () => {
     syncMobileUiProfile();
   };
@@ -1509,6 +1605,14 @@ onBeforeUnmount(() => {
   if (imageFilterReloadTimer !== null) {
     window.clearTimeout(imageFilterReloadTimer);
     imageFilterReloadTimer = null;
+  }
+  if (credentialsApplyDebounceTimer !== null) {
+    window.clearTimeout(credentialsApplyDebounceTimer);
+    credentialsApplyDebounceTimer = null;
+  }
+  if (loadStateLogTimer !== null) {
+    window.clearTimeout(loadStateLogTimer);
+    loadStateLogTimer = null;
   }
 
   if (relativeClockTimer !== null) {
@@ -2237,7 +2341,7 @@ async function loadCceVpcs(options: { log?: boolean } = {}) {
     if (credentials) {
       args.credentials = credentials;
     }
-    const data = await invoke<VpcOption[]>("list_vpcs", args);
+    const data = await invokeWithNetLog<VpcOption[]>("list_vpcs", args);
     cceVpcs.value = data;
     const knownVpc = cceVpcs.value.some((item) => item.id === cceClusterVpcId.value)
       ? cceClusterVpcId.value
@@ -2281,7 +2385,7 @@ async function loadCceSubnets(options: { log?: boolean } = {}) {
     if (credentials) {
       args.credentials = credentials;
     }
-    const data = await invoke<SubnetOption[]>("list_subnets", args);
+    const data = await invokeWithNetLog<SubnetOption[]>("list_subnets", args);
     cceSubnets.value = data;
     if (!cceSubnets.value.some((item) => item.id === cceClusterSubnetId.value)) {
       cceClusterSubnetId.value = cceSubnets.value[0]?.id ?? "";
@@ -6153,7 +6257,7 @@ async function loadVpcs() {
       args.credentials = credentials;
     }
 
-    const data = await invoke<VpcOption[]>("list_vpcs", args);
+    const data = await invokeWithNetLog<VpcOption[]>("list_vpcs", args);
     vpcs.value = data;
     applyVpcSelection(data);
     addLog("app", "info", `Loaded ${data.length} VPCs for region ${region.value}.`);
@@ -6190,7 +6294,7 @@ async function loadSubnets() {
       args.credentials = credentials;
     }
 
-    const data = await invoke<SubnetOption[]>("list_subnets", args);
+    const data = await invokeWithNetLog<SubnetOption[]>("list_subnets", args);
     subnets.value = data;
     applySubnetSelection(data);
     addLog("app", "info", `Loaded ${data.length} subnets for VPC ${selectedVpc.value}.`);
@@ -6236,7 +6340,7 @@ async function loadImages() {
       args.filters = filters;
     }
 
-    const data = await invoke<ImageOption[]>("list_images", args);
+    const data = await invokeWithNetLog<ImageOption[]>("list_images", args);
     images.value = data;
     applyImageSelection(data);
     addLog("app", "info", `Loaded ${data.length} images for region ${region.value}.`);
@@ -6264,7 +6368,7 @@ async function loadFlavors() {
       args.credentials = credentials;
     }
 
-    const data = await invoke<FlavorOption[]>("list_flavors", args);
+    const data = await invokeWithNetLog<FlavorOption[]>("list_flavors", args);
     flavors.value = data;
     applyFlavorSelection(data);
     addLog("app", "info", `Loaded ${data.length} flavors for region ${region.value}.`);
@@ -6296,7 +6400,7 @@ async function loadEips(options: { log?: boolean } = {}) {
       args.credentials = credentials;
     }
 
-    const data = await invoke<EipListResponse>("list_eips", args);
+    const data = await invokeWithNetLog<EipListResponse>("list_eips", args);
     const publicips = data.publicips ?? [];
     eips.value = publicips;
     if (shouldLog) {
@@ -6330,7 +6434,7 @@ async function loadEvss(options: { log?: boolean } = {}) {
       args.credentials = credentials;
     }
 
-    const data = await invoke<EvsListResponse>("list_evss", args);
+    const data = await invokeWithNetLog<EvsListResponse>("list_evss", args);
     const volumes = data.volumes ?? [];
     evss.value = volumes;
     if (shouldLog) {
@@ -6364,7 +6468,7 @@ async function loadEcses(options: { log?: boolean } = {}) {
       args.credentials = credentials;
     }
 
-    const data = await invoke<EcsListResponse>("list_ecses", args);
+    const data = await invokeWithNetLog<EcsListResponse>("list_ecses", args);
     const servers = data.servers ?? [];
     ecses.value = servers;
     if (shouldLog) {
@@ -6461,19 +6565,33 @@ async function loadResponseData(options: { log?: boolean } = {}) {
 
 async function loadAll() {
   if (loadingAll.value) {
+    addLog("app", "info", "load-all skipped (already running)");
     return;
   }
 
   loadingAll.value = true;
+  logReloadGateState("load-all-start");
+  const runSequentially = isMobileUi.value;
+  addLog("app", "info", `load-all mode=${runSequentially ? "sequential-mobile" : "parallel"}`);
   addLog("app", "info", `Reloading all resources for region ${region.value}.`);
   try {
-    await Promise.all([loadImages(), loadFlavors(), loadVpcs(), loadEips(), loadEvss(), loadEcses()]);
+    if (runSequentially) {
+      await loadImages();
+      await loadFlavors();
+      await loadVpcs();
+      await loadEips();
+      await loadEvss();
+      await loadEcses();
+    } else {
+      await Promise.all([loadImages(), loadFlavors(), loadVpcs(), loadEips(), loadEvss(), loadEcses()]);
+    }
     if (selectedVpc.value) {
       await loadSubnets();
     }
     addLog("app", "info", `Finished reloading all resources for region ${region.value}.`);
   } finally {
     loadingAll.value = false;
+    logReloadGateState("load-all-done");
   }
 }
 
@@ -6488,9 +6606,30 @@ async function saveCredentials() {
     await store.set("accessKey", accessKey.value);
     await store.set("secretKey", secretKey.value);
     await hydrateServerPasswordsFromStore();
+    await loadAll();
     addLog("app", "info", "Saved API credentials and refreshed encrypted VM passwords.");
   } finally {
     savingCredentials.value = false;
+  }
+}
+
+async function probeCredentials() {
+  if (probingCredentials.value) {
+    return;
+  }
+
+  probingCredentials.value = true;
+  errorMsg.value = "";
+  addLog("app", "info", `Probing credentials for region ${region.value}.`);
+  try {
+    const credentials = buildCredentialsPayload();
+    const args: Record<string, unknown> = { region: region.value, credentials };
+    const data = await invokeWithNetLog<VpcOption[]>("list_vpcs", args);
+    addLog("app", "info", `Credential probe OK (${data.length} VPCs visible).`);
+  } catch (err) {
+    setError(`Credential probe failed: ${errorToString(err)}`);
+  } finally {
+    probingCredentials.value = false;
   }
 }
 
@@ -6510,8 +6649,10 @@ async function initStore() {
     hadCache = await hydrateRegionCache();
     queueStartupTaskCandidates(ecses.value);
     void drainAutoUpdateQueue();
+    logReloadGateState("store-init-ok");
   } catch (err) {
     setError(`Failed to load credential store: ${errorToString(err)}`);
+    logReloadGateState("store-init-fail");
   }
 
   if (!hadCache) {
@@ -6939,6 +7080,14 @@ async function createEcs() {
             @click="saveCredentials"
           >
             {{ savingCredentials ? "Saving..." : "Save Credentials" }}
+          </button>
+          <button
+            class="ghost minor"
+            type="button"
+            :disabled="probingCredentials || !accessKey.trim() || !secretKey.trim()"
+            @click="probeCredentials"
+          >
+            {{ probingCredentials ? "Checking..." : "Test Credentials" }}
           </button>
           <button class="ghost minor" type="button" @click="openHuaweiCloudConsole">
             Go to Console

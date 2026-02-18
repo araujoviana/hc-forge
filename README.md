@@ -39,6 +39,24 @@ pnpm build
 pnpm tauri build
 ```
 
+## GitHub Release Build
+
+A workflow is available at `.github/workflows/release-builds.yml`.
+
+- Trigger: `release.published` (also supports manual `workflow_dispatch`)
+- Artifacts:
+  - Windows: `hc-forge-windows-x64.exe`
+  - Linux: `hc-forge-linux-x64` and `hc-forge-linux-x64.tar.gz`
+  - Android: signed APK files (when signing secrets are set)
+- Release uploads: on release events, all built artifacts are attached to the GitHub Release.
+
+For Android signing in GitHub Actions, set these repository secrets:
+
+- `ANDROID_KEYSTORE_BASE64` (base64-encoded `.jks`)
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
 ## Test
 
 ```bash

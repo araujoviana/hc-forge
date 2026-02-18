@@ -50,3 +50,11 @@ tauri-plugin-fs = "2"
 moka = { version = "0.12.10", features = ["sync"] }
 futures = "0.3.31"
 tauri-plugin-os = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-root-certs = "1.0.6"
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
+
