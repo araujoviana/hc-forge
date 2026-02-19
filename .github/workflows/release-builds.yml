@@ -4,12 +4,6 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      build_android:
-        description: Build signed Android APK (requires Android signing secrets)
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -122,151 +116,11 @@ jobs:
             release/hc-forge-linux-x64.tar.gz
           if-no-files-found: error
 
-  build-android:
-    name: Build Android (APK)
-    runs-on: ubuntu-22.04
-    if: ${{ github.event_name == 'release' || inputs.build_android }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Setup Rust (Android target)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Validate Android signing secrets
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          missing=0
-          [ -n "$ANDROID_KEYSTORE_BASE64" ] || { echo "::error::Missing secret ANDROID_KEYSTORE_BASE64"; missing=1; }
-          [ -n "$ANDROID_KEYSTORE_PASSWORD" ] || { echo "::error::Missing secret ANDROID_KEYSTORE_PASSWORD"; missing=1; }
-          [ -n "$ANDROID_KEY_ALIAS" ] || { echo "::error::Missing secret ANDROID_KEY_ALIAS"; missing=1; }
-          [ -n "$ANDROID_KEY_PASSWORD" ] || { echo "::error::Missing secret ANDROID_KEY_PASSWORD"; missing=1; }
-          if [ "$missing" -ne 0 ]; then
-            exit 1
-          fi
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Initialize Android project
-        run: pnpm tauri android init --ci --skip-targets-install
-
-      - name: Configure Android keystore
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release-keystore.jks"
-          if [ ! -s "$RUNNER_TEMP/release-keystore.jks" ]; then
-            echo "::error::Decoded keystore is empty."
-            exit 1
-          fi
-          {
-            printf 'storeFile=%s\n' "$RUNNER_TEMP/release-keystore.jks"
-            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
-            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
-            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
-          } > src-tauri/gen/android/keystore.properties
-
-      - name: Validate decoded keystore and alias
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-        run: |
-          keytool -list \
-            -keystore "$RUNNER_TEMP/release-keystore.jks" \
-            -storepass "$ANDROID_KEYSTORE_PASSWORD" >/dev/null
-          keytool -list \
-            -keystore "$RUNNER_TEMP/release-keystore.jks" \
-            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-            -alias "$ANDROID_KEY_ALIAS" >/dev/null
-
-      - name: Build Android APK
-        run: pnpm tauri android build --ci --apk --target aarch64
-
-      - name: Collect and sign Android APK artifacts
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          mkdir -p release
-          BUILD_TOOLS_DIR="$(ls -1d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)"
-          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
-          if [ ! -x "$APKSIGNER" ]; then
-            echo "::error::apksigner not found at $APKSIGNER"
-            exit 1
-          fi
-
-          find src-tauri/gen/android/app/build/outputs -type f -name "*.apk" | while read -r apk; do
-            file_name="$(basename "$apk")"
-            if [[ "$file_name" == *-unsigned.apk ]]; then
-              signed_name="${file_name%-unsigned.apk}.apk"
-              signed_path="release/$signed_name"
-              "$APKSIGNER" sign \
-                --ks "$RUNNER_TEMP/release-keystore.jks" \
-                --ks-key-alias "$ANDROID_KEY_ALIAS" \
-                --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
-                --key-pass "pass:$ANDROID_KEY_PASSWORD" \
-                --out "$signed_path" \
-                "$apk"
-              "$APKSIGNER" verify --verbose "$signed_path"
-            else
-              cp "$apk" "release/$file_name"
-              "$APKSIGNER" verify --verbose "release/$file_name" || true
-            fi
-          done
-
-          signed_count="$(find release -type f -name "*.apk" ! -name "*-unsigned.apk" | wc -l | tr -d ' ')"
-          if [ "$signed_count" -eq 0 ]; then
-            echo "::error::No signed APK produced. Refusing to publish unsigned APKs."
-            exit 1
-          fi
-
-          find release -type f -name "*-unsigned.apk" -delete
-          ls -la release
-
-      - name: Upload Android artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-android
-          path: release/*
-          if-no-files-found: error
-
   publish-release-assets:
     name: Attach Artifacts To Release
     runs-on: ubuntu-latest
-    needs: [build-windows, build-linux, build-android]
-    if: ${{ always() && github.event_name == 'release' && needs.build-windows.result == 'success' && needs.build-linux.result == 'success' && (needs.build-android.result == 'success' || needs.build-android.result == 'skipped') }}
+    needs: [build-windows, build-linux]
+    if: ${{ always() && github.event_name == 'release' && needs.build-windows.result == 'success' && needs.build-linux.result == 'success' }}
 
     steps:
       - name: Download build artifacts
