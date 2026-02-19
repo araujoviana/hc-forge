@@ -1,6 +1,6 @@
 # HC Forge
 
-HC Forge is a desktop toolbox for Huawei Cloud operations built with Tauri, Vue 3, TypeScript, and Rust.
+HC Forge is a desktop/mobile toolbox for Huawei Cloud operations built with Tauri, Vue 3, TypeScript, and Rust.
 
 ## What It Covers
 
@@ -39,6 +39,18 @@ pnpm build
 pnpm tauri build
 ```
 
+## Supported Platforms
+
+- Windows (x64)
+- Linux (x64)
+- Android (APK, manually provided on releases)
+
+## Downloads
+
+Prebuilt files are available on the Releases page:
+
+- https://github.com/araujoviana/hc-forge/releases
+
 ## GitHub Release Build
 
 A workflow is available at `.github/workflows/release-builds.yml`.
@@ -47,15 +59,7 @@ A workflow is available at `.github/workflows/release-builds.yml`.
 - Artifacts:
   - Windows: `hc-forge-windows-x64.exe`
   - Linux: `hc-forge-linux-x64` and `hc-forge-linux-x64.tar.gz`
-  - Android: signed APK files (when signing secrets are set)
 - Release uploads: on release events, all built artifacts are attached to the GitHub Release.
-
-For Android signing in GitHub Actions, set these repository secrets:
-
-- `ANDROID_KEYSTORE_BASE64` (base64-encoded `.jks`)
-- `ANDROID_KEYSTORE_PASSWORD`
-- `ANDROID_KEY_ALIAS`
-- `ANDROID_KEY_PASSWORD`
 
 ## Test
 
@@ -81,6 +85,8 @@ pnpm test:rust
 - [ ] Create a HC Forge custom icon
 - [ ] Expand service coverage
 - [ ] Add pod management and remote access
+- [ ] Add pagination to OBS buckets list
+- [ ] Add cycling animation for long OBS object names
 
 ## License
 
